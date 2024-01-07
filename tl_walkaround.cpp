@@ -41,12 +41,11 @@ inline constinit struct ExEdit092 {
 			if (that_fp->information != nullptr &&
 				0 == std::strcmp(that_fp->information, info_exedit092)) {
 				fp = that_fp;
-				break;
+				init_pointers();
+				return true;
 			}
 		}
-		if (fp == nullptr) return false;
-		init_pointers();
-		return true;
+		return false;
 	}
 
 	int32_t* SortedObjectLayerBeginIndex;	// 0x149670
@@ -59,8 +58,10 @@ inline constinit struct ExEdit092 {
 	int32_t* current_scene;					// 0x1a5310
 	int32_t* curr_timeline_scale_len;		// 0x0a3fc8
 	int32_t* scroll_follows_cursor;			// 0x1790d0
+	HWND*	 timeline_h_scroll_bar;			// 0x179108
 	int32_t* timeline_h_scroll_pos;			// 0x1a52f0
 	int32_t* timeline_width_in_frames;		// 0x1a52f8
+	HWND*	 timeline_v_scroll_bar;			// 0x158d34
 	int32_t* timeline_v_scroll_pos;			// 0x1a5308
 	int32_t* timeline_height_in_layers;		// 0x0a3fbc
 
@@ -79,8 +80,10 @@ private:
 		pick_addr(current_scene,				0x1a5310);
 		pick_addr(curr_timeline_scale_len,		0x0a3fc8);
 		pick_addr(scroll_follows_cursor,		0x1790d0);
+		pick_addr(timeline_h_scroll_bar,		0x179108);
 		pick_addr(timeline_h_scroll_pos,		0x1a52f0);
 		pick_addr(timeline_width_in_frames,		0x1a52f8);
+		pick_addr(timeline_v_scroll_bar,		0x158d34);
 		pick_addr(timeline_v_scroll_pos,		0x1a5308);
 		pick_addr(timeline_height_in_layers,	0x0a3fbc);
 	}
@@ -237,55 +240,31 @@ public:
 
 // タイムラインのスクロールバー操作．
 class TimelineScrollBar {
+	HWND* const* const pphwnd;
 	const uint32_t hv_message;
-	std::optional<HWND> hwnd;
 
-	HWND find_scrollbar()
-	{
-		if (exedit.fp->hwnd == nullptr) return nullptr;
-
-		// check if it's a scrollbar with the desired orientation.
-		auto check_hwnd = [hv_style = hv_message == WM_HSCROLL ? SBS_HORZ : SBS_VERT](HWND hwnd) {
-			return check_window_class(hwnd, WC_SCROLLBARW) &&
-				(::GetWindowLongW(hwnd, GWL_STYLE) & (SBS_HORZ | SBS_VERT)) == hv_style;
-		};
-
-		// get the first child.
-		auto ret = ::GetWindow(exedit.fp->hwnd, GW_CHILD);
-		if (ret == nullptr || check_hwnd(ret)) return ret;
-
-		// then try the next window.
-		ret = ::GetWindow(ret, GW_HWNDNEXT);
-		if (ret == nullptr || check_hwnd(ret)) return ret;
-
-		// exeditfp->hwnd only have two children.
-		return nullptr;
-	}
-
-	HWND get_hwnd()
-	{
-		if (!hwnd) hwnd = find_scrollbar();
-		return *hwnd;
-	}
+	HWND get_hwnd() const { return **pphwnd; }
 
 public:
 	constexpr TimelineScrollBar(bool horizontal)
-		: hv_message{ static_cast<uint32_t>(horizontal ? WM_HSCROLL : WM_VSCROLL) } {}
+		: pphwnd{ horizontal ? &exedit.timeline_h_scroll_bar : &exedit.timeline_v_scroll_bar }
+		, hv_message{ static_cast<uint32_t>(horizontal ? WM_HSCROLL : WM_VSCROLL) } {}
 
-	bool is_valid() { return get_hwnd() != nullptr; }
+	bool is_valid() const { return get_hwnd() != nullptr; }
 
-	void set_pos(int pos, EditHandle* editp)
+	void set_pos(int pos, EditHandle* editp) const
 	{
-		if (!is_valid()) return;
+		auto hwnd = get_hwnd();
+		if (hwnd == nullptr) return;
 
 		const SCROLLINFO si{ .cbSize = sizeof(si), .fMask = SIF_POS, .nPos = pos };
-		::SetScrollInfo(*hwnd, SB_CTL, &si, true);
+		::SetScrollInfo(hwnd, SB_CTL, &si, true);
 		exedit.fp->func_WndProc(exedit.fp->hwnd, hv_message,
-			(pos << 16) | SB_THUMBTRACK, reinterpret_cast<LPARAM>(*hwnd),
+			(pos << 16) | SB_THUMBTRACK, reinterpret_cast<LPARAM>(hwnd),
 			editp, exedit.fp);
 	}
 };
-inline constinit struct : TimelineScrollBar {
+inline constexpr struct : TimelineScrollBar {
 	constexpr static int
 		scroll_raw = 1'000'000, // スクロール量の基準となる内部的な数値．
 		margin_raw = 960'000; // 最終フレームより右側に表示される余白幅を決定する内部的な数値．
@@ -298,7 +277,7 @@ inline constinit struct : TimelineScrollBar {
 	static int get_pos() { return *exedit.timeline_h_scroll_pos; }
 	static int get_page_size() { return *exedit.timeline_width_in_frames; }
 } tl_scroll_h { true };
-inline constinit struct : TimelineScrollBar {
+inline constexpr struct : TimelineScrollBar {
 	static int get_pos() { return *exedit.timeline_v_scroll_pos; }
 	static int get_page_size() { return *exedit.timeline_height_in_layers; }
 } tl_scroll_v { false };
@@ -743,7 +722,7 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.00"
+#define PLUGIN_VERSION	"v1.01-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
