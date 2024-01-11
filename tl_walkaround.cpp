@@ -241,11 +241,15 @@ public:
 // タイムラインのスクロールバー操作．
 class TimelineScrollBar {
 	HWND* const& phwnd;
+	int32_t* const& pos;
+	int32_t* const& page;
 	const uint32_t hv_message;
 
 public:
 	constexpr TimelineScrollBar(bool horizontal)
 		: phwnd{ horizontal ? exedit.timeline_h_scroll_bar : exedit.timeline_v_scroll_bar }
+		, pos{ horizontal ? exedit.timeline_h_scroll_pos : exedit.timeline_v_scroll_pos }
+		, page{horizontal ? exedit.timeline_width_in_frames : exedit.timeline_height_in_layers }
 		, hv_message{ static_cast<uint32_t>(horizontal ? WM_HSCROLL : WM_VSCROLL) } {}
 
 	void set_pos(int pos, EditHandle* editp) const
@@ -259,6 +263,8 @@ public:
 			(pos << 16) | SB_THUMBTRACK, reinterpret_cast<LPARAM>(hwnd),
 			editp, exedit.fp);
 	}
+	int get_pos() const { return *pos; }
+	int get_page_size() const { return *page; }
 };
 inline constexpr struct : TimelineScrollBar {
 	constexpr static int
@@ -269,14 +275,8 @@ inline constexpr struct : TimelineScrollBar {
 			return margin_raw / coeff;
 		return -1;
 	}
-
-	static int get_pos() { return *exedit.timeline_h_scroll_pos; }
-	static int get_page_size() { return *exedit.timeline_width_in_frames; }
 } tl_scroll_h { true };
-inline constexpr struct : TimelineScrollBar {
-	static int get_pos() { return *exedit.timeline_v_scroll_pos; }
-	static int get_page_size() { return *exedit.timeline_height_in_layers; }
-} tl_scroll_v { false };
+inline constexpr TimelineScrollBar tl_scroll_v { false };
 
 
 ////////////////////////////////
@@ -471,14 +471,10 @@ inline bool menu_scroll_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp
 		int margin = tl_scroll_h.get_margin();
 		int pos = fp->exfunc->get_frame(editp);
 
-		int moveto = curr_scr_pos;
-		if (pos < curr_scr_pos + margin) moveto = pos - margin;
-		else if (curr_scr_pos + page_size - margin < pos)
-			moveto = pos - page_size + margin;
-		if (moveto < 0) moveto = 0;
-		else if (int max = fp->exfunc->get_frame_n(editp) - page_size + margin;
-			moveto > max) moveto = max;
+		int moveto = page_size < 2 * margin ? pos - (page_size / 2) :
+			std::clamp(curr_scr_pos, pos - page_size + margin, pos - margin);
 
+		moveto = std::clamp(moveto, 0, fp->exfunc->get_frame_n(editp) - page_size + margin);
 		if (moveto != curr_scr_pos)
 			tl_scroll_h.set_pos(moveto, editp);
 	}
@@ -606,13 +602,9 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		if (curr_scr_pos == 0 && pos <= margin); // do nothing.
 		else if (2 * margin >= page_size)
 			moveto = curr_scr_pos + page_size / 2;
-		else if (pos < curr_scr_pos + margin)
-			moveto = curr_scr_pos + margin;
-		else if (pos > curr_scr_pos + page_size - margin)
-			moveto = curr_scr_pos + page_size - margin;
+		else moveto = std::clamp(pos, curr_scr_pos + margin, curr_scr_pos + page_size - margin);
 
-		if (moveto < 0) moveto = 0;
-		if (moveto >= len) moveto = len - 1;
+		moveto = std::clamp(moveto, 0, len - 1);
 		break;
 	}
 	}
@@ -711,7 +703,7 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.01-beta2"
+#define PLUGIN_VERSION	"v1.01"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
