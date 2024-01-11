@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2023 sigma_axis
+Copyright (c) 2024 sigma-axis
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -240,21 +240,17 @@ public:
 
 // タイムラインのスクロールバー操作．
 class TimelineScrollBar {
-	HWND* const* const pphwnd;
+	HWND* const& phwnd;
 	const uint32_t hv_message;
-
-	HWND get_hwnd() const { return **pphwnd; }
 
 public:
 	constexpr TimelineScrollBar(bool horizontal)
-		: pphwnd{ horizontal ? &exedit.timeline_h_scroll_bar : &exedit.timeline_v_scroll_bar }
+		: phwnd{ horizontal ? exedit.timeline_h_scroll_bar : exedit.timeline_v_scroll_bar }
 		, hv_message{ static_cast<uint32_t>(horizontal ? WM_HSCROLL : WM_VSCROLL) } {}
-
-	bool is_valid() const { return get_hwnd() != nullptr; }
 
 	void set_pos(int pos, EditHandle* editp) const
 	{
-		auto hwnd = get_hwnd();
+		auto hwnd = *phwnd;
 		if (hwnd == nullptr) return;
 
 		const SCROLLINFO si{ .cbSize = sizeof(si), .fMask = SIF_POS, .nPos = pos };
@@ -449,7 +445,7 @@ inline bool menu_scroll_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp
 	case Menu::ScrollLeft: dir = -1; goto scroll_LR;
 	case Menu::ScrollRight: dir = 1; goto scroll_LR;
 	scroll_LR:
-		if (int coeff; tl_scroll_h.is_valid() && (coeff = *exedit.curr_timeline_scale_len, coeff > 0)) {
+		if (int coeff = *exedit.curr_timeline_scale_len; coeff > 0) {
 			dir *= settings.scroll_amount / coeff;
 			tl_scroll_h.set_pos(tl_scroll_h.get_pos() + dir, editp);
 		}
@@ -458,47 +454,42 @@ inline bool menu_scroll_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp
 	case Menu::ScrollPageLeft: dir = -1; goto scroll_page_LR;
 	case Menu::ScrollPageRight: dir = 1; goto scroll_page_LR;
 	scroll_page_LR:
-		if (tl_scroll_h.is_valid()) {
-			dir *= tl_scroll_h.get_page_size();
-			tl_scroll_h.set_pos(tl_scroll_h.get_pos() + dir, editp);
-		}
+		dir *= tl_scroll_h.get_page_size();
+		tl_scroll_h.set_pos(tl_scroll_h.get_pos() + dir, editp);
 		break;
 
 	case Menu::ScrollLeftMost: dir = -1; goto scroll_end_LR;
 	case Menu::ScrollRightMost: dir = 1; goto scroll_end_LR;
 	scroll_end_LR:
-		if (tl_scroll_h.is_valid())
-			tl_scroll_h.set_pos(dir < 0 ? 0 : fp->exfunc->get_frame_n(editp), editp);
+		tl_scroll_h.set_pos(dir < 0 ? 0 : fp->exfunc->get_frame_n(editp), editp);
 		break;
 
 	case Menu::ScrollToCurrent:
-		if (tl_scroll_h.is_valid()) {
-			int curr_scr_pos = tl_scroll_h.get_pos();
-			int page_size = tl_scroll_h.get_page_size();
-			int margin = tl_scroll_h.get_margin();
-			int pos = fp->exfunc->get_frame(editp);
+	{
+		int curr_scr_pos = tl_scroll_h.get_pos();
+		int page_size = tl_scroll_h.get_page_size();
+		int margin = tl_scroll_h.get_margin();
+		int pos = fp->exfunc->get_frame(editp);
 
-			int moveto = curr_scr_pos;
-			if (pos < curr_scr_pos + margin) moveto = pos - margin;
-			else if (curr_scr_pos + page_size - margin < pos)
-				moveto = pos - page_size + margin;
-			if (moveto < 0) moveto = 0;
-			else if (int max = fp->exfunc->get_frame_n(editp) - page_size + margin;
-				moveto > max) moveto = max;
+		int moveto = curr_scr_pos;
+		if (pos < curr_scr_pos + margin) moveto = pos - margin;
+		else if (curr_scr_pos + page_size - margin < pos)
+			moveto = pos - page_size + margin;
+		if (moveto < 0) moveto = 0;
+		else if (int max = fp->exfunc->get_frame_n(editp) - page_size + margin;
+			moveto > max) moveto = max;
 
-			if (moveto != curr_scr_pos)
-				tl_scroll_h.set_pos(moveto, editp);
-		}
+		if (moveto != curr_scr_pos)
+			tl_scroll_h.set_pos(moveto, editp);
+	}
 		break;
 
 		// vertical (layerwise) scroll.
 	case Menu::ScrollUp: dir = -1; goto scroll_UD;
 	case Menu::ScrollDown: dir = 1; goto scroll_UD;
 	scroll_UD:
-		if (tl_scroll_v.is_valid()) {
-			dir *= settings.layer_count;
-			tl_scroll_v.set_pos(tl_scroll_v.get_pos() + dir, editp);
-		}
+		dir *= settings.layer_count;
+		tl_scroll_v.set_pos(tl_scroll_v.get_pos() + dir, editp);
 		break;
 	}
 
@@ -531,17 +522,17 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	case Menu::StepObjLeftAll: skip_midpoints = true; goto step_left_all;
 	case Menu::StepMidptLeftAll: skip_midpoints = false; goto step_left_all;
 	step_left_all:
+	{
 		// 全レイヤーを探して左の編集点へ移動．選択オブジェクトがない場合のフォールバックも兼任．
 		moveto = 0;
-		{
-			auto scene_layer_settings = exedit.LayerSettings + num_layers * (*exedit.current_scene);
-			for (int j = 0; j < num_layers; j++) {
-				if (settings.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
-				moveto = std::max(moveto,
-					Timeline::find_adjacent_left(pos, j, skip_midpoints, settings.skip_inactive_objects));
-			}
+		auto scene_layer_settings = exedit.LayerSettings + num_layers * (*exedit.current_scene);
+		for (int j = 0; j < num_layers; j++) {
+			if (settings.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
+			moveto = std::max(moveto,
+				Timeline::find_adjacent_left(pos, j, skip_midpoints, settings.skip_inactive_objects));
 		}
 		break;
+	}
 
 		// 以上 2 つの左右入れ替え．
 	case Menu::StepObjRight: skip_midpoints = true; goto step_right;
@@ -557,16 +548,16 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	case Menu::StepObjRightAll: skip_midpoints = true; goto step_right_all;
 	case Menu::StepMidptRightAll: skip_midpoints = false; goto step_right_all;
 	step_right_all:
+	{
 		moveto = len - 1;
-		{
-			auto scene_layer_settings = exedit.LayerSettings + num_layers * (*exedit.current_scene);
-			for (int j = 0; j < num_layers; j++) {
-				if (settings.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
-				moveto = std::min(moveto,
-					Timeline::find_adjacent_right(pos, j, skip_midpoints, settings.skip_inactive_objects, len));
-			}
+		auto scene_layer_settings = exedit.LayerSettings + num_layers * (*exedit.current_scene);
+		for (int j = 0; j < num_layers; j++) {
+			if (settings.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
+			moveto = std::min(moveto,
+				Timeline::find_adjacent_right(pos, j, skip_midpoints, settings.skip_inactive_objects, len));
 		}
 		break;
+	}
 
 #define chain_begin(obj)	(skip_midpoints ? Timeline::chain_begin(obj) : (obj)->frame_begin)
 #define chain_end(obj)		(skip_midpoints ? Timeline::chain_end(obj) : (obj)->frame_end)
@@ -600,32 +591,30 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	case Menu::StepPageLeft: dir = -1; goto step_page_LR;
 	case Menu::StepPageRight: dir = 1; goto step_page_LR;
 	step_page_LR:
-		if (tl_scroll_h.is_valid()) {
-			dir *= tl_scroll_h.get_page_size() - tl_scroll_h.get_margin();
-			moveto = std::clamp(pos + dir, 0, len - 1);
-		}
+		dir *= tl_scroll_h.get_page_size() - tl_scroll_h.get_margin();
+		moveto = std::clamp(pos + dir, 0, len - 1);
 		break;
 		}
 
 		// タイムラインの表示範囲内まで現在フレームを移動．
 	case Menu::StepIntoView:
-		if (tl_scroll_h.is_valid()) {
-			int curr_scr_pos = tl_scroll_h.get_pos();
-			int page_size = tl_scroll_h.get_page_size();
-			int margin = tl_scroll_h.get_margin();
+	{
+		int curr_scr_pos = tl_scroll_h.get_pos();
+		int page_size = tl_scroll_h.get_page_size();
+		int margin = tl_scroll_h.get_margin();
 
-			if (curr_scr_pos == 0 && pos <= margin); // do nothing.
-			else if (2 * margin >= page_size)
-				moveto = curr_scr_pos + page_size / 2;
-			else if (pos < curr_scr_pos + margin)
-				moveto = curr_scr_pos + margin;
-			else if (pos > curr_scr_pos + page_size - margin)
-				moveto = curr_scr_pos + page_size - margin;
+		if (curr_scr_pos == 0 && pos <= margin); // do nothing.
+		else if (2 * margin >= page_size)
+			moveto = curr_scr_pos + page_size / 2;
+		else if (pos < curr_scr_pos + margin)
+			moveto = curr_scr_pos + margin;
+		else if (pos > curr_scr_pos + page_size - margin)
+			moveto = curr_scr_pos + page_size - margin;
 
-			if (moveto < 0) moveto = 0;
-			if (moveto >= len) moveto = len - 1;
-		}
+		if (moveto < 0) moveto = 0;
+		if (moveto >= len) moveto = len - 1;
 		break;
+	}
 	}
 
 	// 位置を特定できたので必要なら移動．
@@ -722,7 +711,7 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.01-beta1"
+#define PLUGIN_VERSION	"v1.01-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
