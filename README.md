@@ -2,7 +2,7 @@
 
 タイムライン上のオブジェクト境界に移動する，いわゆる編集点移動のショートカットコマンドを追加するプラグインです．他にもスクロール操作などタイムラインをキーボード操作で見て回るのに便利なショートカットコマンドを追加します．
 
-[ダウンロードはこちら．](https://github.com/sigma-axis/aviutl_tl_walkaround/releases)
+[ダウンロードはこちら．](https://github.com/sigma-axis/aviutl_tl_walkaround/releases) [紹介動画．](https://www.nicovideo.jp/watch/sm43284722)
 
 ![編集点移動のデモ](https://github.com/sigma-axis/aviutl_tl_walkaround/assets/132639613/74b8bd73-1551-4068-b7bf-ca8ac2fb95b0)
 
