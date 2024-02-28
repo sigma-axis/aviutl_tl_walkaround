@@ -41,7 +41,7 @@ jobs:
       run: |
         mkdir pack
         copy ${{ matrix.configuration }}/*.auf pack
-        copy assets/*.ini pack
+        xcopy assets pack /e /i
         copy *.md pack
         copy LICENSE pack
       # pick up and add any files you may need.
@@ -76,7 +76,7 @@ jobs:
     - name: Prepare release notes
       id: release-notes
       run: |
-        echo "name=${{ github.ref_name }} ($(date +'%Y-%m-%d'))" >> $GITHUB_OUTPUT
+        echo "name=${{ github.ref_name }} ($(TZ='Asia/Tokyo' date +'%Y-%m-%d'))" >> $GITHUB_OUTPUT
         echo "### 更新内容" >> ReleaseNotes.txt
         phase=0
         IFS=$'\n'
