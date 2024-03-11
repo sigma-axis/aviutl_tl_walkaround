@@ -65,6 +65,11 @@ inline constinit struct ExEdit092 {
 	int32_t* timeline_v_scroll_pos;			// 0x1a5308
 	int32_t* timeline_height_in_layers;		// 0x0a3fbc
 
+	int32_t* timeline_BPM_tempo;			// 0x159190, multiplied by 10'000
+	int32_t* timeline_BPM_frame_origin;		// 0x158d28, 1-based
+	int32_t* timeline_BPM_num_beats;		// 0x178e30
+	//int32_t* timeline_BPM_show_grid;		// 0x196760, 0: hidden, 1: visible
+
 private:
 	void init_pointers()
 	{
@@ -86,6 +91,11 @@ private:
 		pick_addr(timeline_v_scroll_bar,		0x158d34);
 		pick_addr(timeline_v_scroll_pos,		0x1a5308);
 		pick_addr(timeline_height_in_layers,	0x0a3fbc);
+
+		pick_addr(timeline_BPM_tempo,			0x159190);
+		pick_addr(timeline_BPM_frame_origin,	0x158d28);
+		pick_addr(timeline_BPM_num_beats,		0x178e30);
+		//pick_addr(timeline_BPM_show_grid,		0x196760);
 	}
 } exedit;
 
@@ -290,6 +300,9 @@ inline constinit struct Settings {
 
 	bool suppress_shift = true;
 
+	uint8_t nth_beat = 3;
+	constexpr static uint8_t bpm_nth_beat_min = 2, bpm_nth_beat_max = 128;
+
 	int layer_count = 1;
 	int seek_amount = tl_scroll_h.scroll_raw;
 	int scroll_amount = tl_scroll_h.scroll_raw;
@@ -308,14 +321,18 @@ inline constinit struct Settings {
 #define load_bool(tgt, section)		load_gen(tgt, section, \
 			0 != , [](auto x) { return x ? 1 : 0; })
 
-		load_bool(skip_inactive_objects, "skips");
-		load_bool(skip_hidden_layers, "skips");
+		load_bool	(skip_inactive_objects,	"skips");
+		load_bool	(skip_hidden_layers,	"skips");
 
-		load_ratio(seek_amount, "scroll");
-		load_ratio(scroll_amount, "scroll");
-		load_int(layer_count, "scroll");
+		load_ratio	(seek_amount,			"scroll");
+		load_ratio	(scroll_amount,			"scroll");
+		load_int	(layer_count,			"scroll");
 
-		load_bool(suppress_shift, "keyboard");
+		load_bool	(suppress_shift,		"keyboard");
+
+		load_gen	(nth_beat,				"bpm_grid",
+			[](auto y) { return std::clamp(y, bpm_nth_beat_min, bpm_nth_beat_max); }, /*id*/);
+
 
 #undef load_bool
 #undef load_ratio
@@ -373,6 +390,15 @@ struct Menu {
 		StepPageLeft,
 		StepPageRight,
 
+		StepMeasureBPMLeft,
+		StepMeasureBPMRight,
+		StepBeatBPMLeft,
+		StepBeatBPMRight,
+		StepQuarterBPMLeft,
+		StepQuarterBPMRight,
+		StepNthBPMLeft,
+		StepNthBPMRight,
+
 		StepIntoSelObj,
 		StepIntoSelMidpt,
 		StepIntoView,
@@ -390,6 +416,10 @@ struct Menu {
 		SelectUpperObj,
 		SelectLowerObj,
 
+		BPMMoveOriginLeft,
+		BPMMoveOriginRight,
+		BPMMoveOriginCurrent,
+
 		Invalid,
 	};
 	using enum ID;
@@ -397,34 +427,46 @@ struct Menu {
 	static constexpr bool is_seek(ID id) { return id <= StepIntoView; }
 	static constexpr bool is_scroll(ID id) { return id <= ScrollDown; }
 	static constexpr bool is_select(ID id) { return id <= SelectLowerObj; }
+	static constexpr bool is_misc(ID id) { return id <= BPMMoveOriginCurrent; }
 
 	constexpr static struct { ID id; const char* name; } Items[] = {
-		{ StepMidptLeft,	"左の中間点(レイヤー)" },
-		{ StepMidptRight,	"右の中間点(レイヤー)" },
-		{ StepObjLeft,		"左のオブジェクト境界(レイヤー)" },
-		{ StepObjRight,		"右のオブジェクト境界(レイヤー)" },
-		{ StepMidptLeftAll,	"左の中間点(シーン)" },
-		{ StepMidptRightAll,"右の中間点(シーン)" },
-		{ StepObjLeftAll,	"左のオブジェクト境界(シーン)" },
-		{ StepObjRightAll,	"右のオブジェクト境界(シーン)" },
-		{ StepIntoSelMidpt,	"現在位置を選択中間点区間に移動" },
-		{ StepIntoSelObj,	"現在位置を選択オブジェクトに移動" },
-		{ StepIntoView,		"現在位置をTL表示範囲内に移動" },
-		{ StepLenLeft,		"左へ一定量移動" },
-		{ StepLenRight,		"右へ一定量移動" },
-		{ StepPageLeft,		"左へ1ページ分移動" },
-		{ StepPageRight,	"右へ1ページ分移動" },
-		{ ScrollLeft,		"TLスクロール(左)" },
-		{ ScrollRight,		"TLスクロール(右)" },
-		{ ScrollPageLeft,	"TLスクロール(左ページ)" },
-		{ ScrollPageRight,	"TLスクロール(右ページ)" },
-		{ ScrollToCurrent,	"TLスクロール(現在位置まで)" },
-		{ ScrollLeftMost,	"TLスクロール(開始位置まで)" },
-		{ ScrollRightMost,	"TLスクロール(終了位置まで)" },
-		{ ScrollUp,			"TLスクロール(上)" },
-		{ ScrollDown,		"TLスクロール(下)" },
-		{ SelectUpperObj,	"現在フレームのオブジェクトへ移動(上)" },
-		{ SelectLowerObj,	"現在フレームのオブジェクトへ移動(下)" },
+		{ StepMidptLeft,		"左の中間点(レイヤー)" },
+		{ StepMidptRight,		"右の中間点(レイヤー)" },
+		{ StepObjLeft,			"左のオブジェクト境界(レイヤー)" },
+		{ StepObjRight,			"右のオブジェクト境界(レイヤー)" },
+		{ StepMidptLeftAll,		"左の中間点(シーン)" },
+		{ StepMidptRightAll,	"右の中間点(シーン)" },
+		{ StepObjLeftAll,		"左のオブジェクト境界(シーン)" },
+		{ StepObjRightAll,		"右のオブジェクト境界(シーン)" },
+		{ StepIntoSelMidpt,		"現在位置を選択中間点区間に移動" },
+		{ StepIntoSelObj,		"現在位置を選択オブジェクトに移動" },
+		{ StepIntoView,			"現在位置をTL表示範囲内に移動" },
+		{ StepLenLeft,			"左へ一定量移動" },
+		{ StepLenRight,			"右へ一定量移動" },
+		{ StepPageLeft,			"左へ1ページ分移動" },
+		{ StepPageRight,		"右へ1ページ分移動" },
+		{ StepMeasureBPMLeft,	"左の小節線に移動(BPM)" },
+		{ StepMeasureBPMRight,	"右の小節線に移動(BPM)" },
+		{ StepBeatBPMLeft,		"左の拍数位置に移動(BPM)" },
+		{ StepBeatBPMRight,		"右の拍数位置に移動(BPM)" },
+		{ StepQuarterBPMLeft,	"左の1/4拍位置に移動(BPM)" },
+		{ StepQuarterBPMRight,	"右の1/4拍位置に移動(BPM)" },
+		{ StepNthBPMLeft,		"左の1/N拍位置に移動(BPM)" },
+		{ StepNthBPMRight,		"右の1/N拍位置に移動(BPM)" },
+		{ BPMMoveOriginLeft,	"基準フレームを左に移動(BPM)" },
+		{ BPMMoveOriginRight,	"基準フレームを右に移動(BPM)" },
+		{ BPMMoveOriginCurrent,	"基準フレームを現在位置に(BPM)" },
+		{ ScrollLeft,			"TLスクロール(左)" },
+		{ ScrollRight,			"TLスクロール(右)" },
+		{ ScrollPageLeft,		"TLスクロール(左ページ)" },
+		{ ScrollPageRight,		"TLスクロール(右ページ)" },
+		{ ScrollToCurrent,		"TLスクロール(現在位置まで)" },
+		{ ScrollLeftMost,		"TLスクロール(開始位置まで)" },
+		{ ScrollRightMost,		"TLスクロール(終了位置まで)" },
+		{ ScrollUp,				"TLスクロール(上)" },
+		{ ScrollDown,			"TLスクロール(下)" },
+		{ SelectUpperObj,		"現在フレームのオブジェクトへ移動(上)" },
+		{ SelectLowerObj,		"現在フレームのオブジェクトへ移動(下)" },
 	};
 
 	// 拡張編集の「現在のオブジェクトを選択」コマンドの ID.
@@ -592,6 +634,75 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		break;
 		}
 
+		// BPM グリッドに沿った移動．
+		{
+		int dir, step_n, step_d;
+		// 小節線に移動．
+	case Menu::StepMeasureBPMLeft: dir = -1; goto step_BPM_measure_LR;
+	case Menu::StepMeasureBPMRight: dir = 1; goto step_BPM_measure_LR;
+	step_BPM_measure_LR:
+		step_n = *exedit.timeline_BPM_num_beats; step_d = 1;
+		goto step_BPM;
+
+		// 拍数で移動．
+	case Menu::StepBeatBPMLeft: dir = -1; goto step_BPM_beat_LR;
+	case Menu::StepBeatBPMRight: dir = 1; goto step_BPM_beat_LR;
+	step_BPM_beat_LR:
+		step_n = 1; step_d = 1;
+		goto step_BPM;
+
+		// 1/4 拍 (16分音符) 単位で移動．
+	case Menu::StepQuarterBPMLeft: dir = -1; goto step_BPM_quarter_LR;
+	case Menu::StepQuarterBPMRight: dir = 1; goto step_BPM_quarter_LR;
+	step_BPM_quarter_LR:
+		step_n = 1; step_d = 4;
+		goto step_BPM;
+
+		// 1/N 拍単位で移動．N は設定ファイルから指定．
+	case Menu::StepNthBPMLeft: dir = -1; goto step_BPM_nth_LR;
+	case Menu::StepNthBPMRight: dir = 1; goto step_BPM_nth_LR;
+	step_BPM_nth_LR:
+		step_n = 1; step_d = settings.nth_beat;
+		goto step_BPM;
+
+	step_BPM:
+		// find the frame rate.
+		auto [fps_n, fps_d] = [&] {
+			FileInfo fi;
+			fp->exfunc->get_file_info(editp, &fi);
+			// the frame rate is calculated as: fi.video_rate / fi.video_scale.
+			return std::make_pair(fi.video_rate, fi.video_scale);
+		}();
+		if (auto tempo = *exedit.timeline_BPM_tempo;
+			fps_n > 0 && fps_d > 0 && tempo > 0) {
+			// calcurate "frames per beat".
+			auto const fpb_n = static_cast<int64_t>(fps_n) * (600'000 * step_n);
+			auto const fpb_d = static_cast<int64_t>(fps_d) * (tempo * step_d);
+			auto const frame_origin = *exedit.timeline_BPM_frame_origin - 1;
+
+			auto beat_from_pos = [&](int32_t pos) {
+				// frame -> beat is by rounding toward zero.
+				pos -= frame_origin;
+				// handle negative positions differently.
+				auto beats = (pos < 0 ? -1 - pos : pos) * fpb_d / fpb_n;
+				return pos < 0 ? -1 - beats : beats;
+			};
+			auto pos_from_beat = [&](int64_t beat) {
+				// beat -> frame is by rounding away from zero.
+				auto d = std::div(beat * fpb_n, fpb_d);
+				if (d.rem > 0) d.quot++; else if (d.rem < 0) d.quot--;
+				return static_cast<int32_t>(d.quot) + frame_origin;
+			};
+
+			// calculate the destination frame according to the direction.
+			if (dir < 0) moveto = pos_from_beat(beat_from_pos(pos - 1));
+			else moveto = pos_from_beat(beat_from_pos(pos) + 1);
+
+			moveto = std::clamp(moveto, 0, len - 1);
+		}
+		break;
+		}
+
 		// タイムラインの表示範囲内まで現在フレームを移動．
 	case Menu::StepIntoView:
 	{
@@ -645,6 +756,28 @@ inline bool menu_select_obj_handler(Menu::ID id, EditHandle* editp)
 		Menu::exedit_command_select_obj, 0, editp, exedit.fp) != FALSE;
 }
 
+inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
+{
+	int const pos = *exedit.timeline_BPM_frame_origin;
+	int moveto = pos;
+	switch (id) {
+	case Menu::ID::BPMMoveOriginLeft: moveto--; break;
+	case Menu::ID::BPMMoveOriginRight: moveto++; break;
+	case Menu::ID::BPMMoveOriginCurrent:
+		moveto = fp->exfunc->get_frame(editp) + 1;
+		break;
+	default: return false;
+	}
+
+	moveto = std::max(moveto, 1); // TODO: necessary?
+	if (pos != moveto) {
+		*exedit.timeline_BPM_frame_origin = moveto;
+		::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
+	}
+
+	return false;
+}
+
 
 ////////////////////////////////
 // AviUtlに渡す関数の定義．
@@ -691,6 +824,7 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 				Menu::is_seek(id)   ? menu_seek_obj_handler(id, editp, fp) :
 				Menu::is_scroll(id) ? menu_scroll_handler(id, editp, fp) :
 				Menu::is_select(id) ? menu_select_obj_handler(id, editp) :
+				Menu::is_misc(id) ? menu_misc_handler(id, editp, fp) :
 				false) ? TRUE : FALSE;
 		}
 		break;
@@ -717,7 +851,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.02"
+#define PLUGIN_VERSION	"v1.03-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
