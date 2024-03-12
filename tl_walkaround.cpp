@@ -208,6 +208,52 @@ struct Timeline {
 	}
 };
 
+struct BPM_Grid {
+	constexpr BPM_Grid(int beats_numer, int beats_denom, EditHandle* editp) {
+		// find the frame rate.
+		FileInfo fi; // the frame rate is calculated as: fi.video_rate / fi.video_scale.
+		exedit.fp->exfunc->get_file_info(editp, &fi);
+
+		// find the tempo in BPM.
+		auto tempo = *exedit.timeline_BPM_tempo;
+
+		// calculate "frames per beat".
+		if (fi.video_rate > 0 && fi.video_scale > 0 && tempo > 0) {
+			fpb_n = static_cast<int64_t>(fi.video_rate) * (600'000 * beats_numer);
+			fpb_d = static_cast<int64_t>(fi.video_scale) * (tempo * beats_denom);
+		}
+		else fpb_n = fpb_d = 0;
+
+		// find the origin of the grid.
+		origin = *exedit.timeline_BPM_frame_origin - 1;
+	}
+
+	// check if the retrieved parameters are valid.
+	constexpr operator bool() const { return fpb_n > 0 && fpb_d > 0; }
+
+	constexpr auto beat_from_pos(int32_t pos) const {
+		// frame -> beat is by rounding toward zero.
+		pos -= origin;
+		// handle negative positions differently.
+		auto beats = (pos < 0 ? -1 - pos : pos) * fpb_d / fpb_n;
+		return pos < 0 ? -1 - beats : beats;
+	}
+
+	/*constexpr */auto pos_from_beat(int64_t beat) const {
+		// beat -> frame is by rounding away from zero.
+		auto d = std::div(beat * fpb_n, fpb_d); // std::div() isn't constexpr at this time.
+		if (d.rem > 0) d.quot++; else if (d.rem < 0) d.quot--;
+		return static_cast<int32_t>(d.quot) + origin;
+	}
+
+private:
+	// "frames per beat" represented as a rational number.
+	int64_t fpb_n, fpb_d;
+
+	// the origin of the BPM grid.
+	int32_t origin;
+};
+
 
 ////////////////////////////////
 // Windows API 利用の補助関数．
@@ -419,6 +465,7 @@ struct Menu {
 		BPMMoveOriginLeft,
 		BPMMoveOriginRight,
 		BPMMoveOriginCurrent,
+		BPMFitBarToCurrent,
 
 		Invalid,
 	};
@@ -427,7 +474,7 @@ struct Menu {
 	static constexpr bool is_seek(ID id) { return id <= StepIntoView; }
 	static constexpr bool is_scroll(ID id) { return id <= ScrollDown; }
 	static constexpr bool is_select(ID id) { return id <= SelectLowerObj; }
-	static constexpr bool is_misc(ID id) { return id <= BPMMoveOriginCurrent; }
+	static constexpr bool is_misc(ID id) { return id <= BPMFitBarToCurrent; }
 
 	constexpr static struct { ID id; const char* name; } Items[] = {
 		{ StepMidptLeft,		"左の中間点(レイヤー)" },
@@ -453,8 +500,9 @@ struct Menu {
 		{ StepQuarterBPMRight,	"右の1/4拍位置に移動(BPM)" },
 		{ StepNthBPMLeft,		"左の1/N拍位置に移動(BPM)" },
 		{ StepNthBPMRight,		"右の1/N拍位置に移動(BPM)" },
-		{ BPMMoveOriginLeft,	"基準フレームを左に移動(BPM)" },
-		{ BPMMoveOriginRight,	"基準フレームを右に移動(BPM)" },
+		{ BPMMoveOriginLeft,	"グリッドを左に移動(BPM)" },
+		{ BPMMoveOriginRight,	"グリッドを右に移動(BPM)" },
+		{ BPMFitBarToCurrent,	"最寄りの小節線を現在位置に(BPM)" },
 		{ BPMMoveOriginCurrent,	"基準フレームを現在位置に(BPM)" },
 		{ ScrollLeft,			"TLスクロール(左)" },
 		{ ScrollRight,			"TLスクロール(右)" },
@@ -666,37 +714,10 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		goto step_BPM;
 
 	step_BPM:
-		// find the frame rate.
-		auto [fps_n, fps_d] = [&] {
-			FileInfo fi;
-			fp->exfunc->get_file_info(editp, &fi);
-			// the frame rate is calculated as: fi.video_rate / fi.video_scale.
-			return std::make_pair(fi.video_rate, fi.video_scale);
-		}();
-		if (auto tempo = *exedit.timeline_BPM_tempo;
-			fps_n > 0 && fps_d > 0 && tempo > 0) {
-			// calcurate "frames per beat".
-			auto const fpb_n = static_cast<int64_t>(fps_n) * (600'000 * step_n);
-			auto const fpb_d = static_cast<int64_t>(fps_d) * (tempo * step_d);
-			auto const frame_origin = *exedit.timeline_BPM_frame_origin - 1;
-
-			auto beat_from_pos = [&](int32_t pos) {
-				// frame -> beat is by rounding toward zero.
-				pos -= frame_origin;
-				// handle negative positions differently.
-				auto beats = (pos < 0 ? -1 - pos : pos) * fpb_d / fpb_n;
-				return pos < 0 ? -1 - beats : beats;
-			};
-			auto pos_from_beat = [&](int64_t beat) {
-				// beat -> frame is by rounding away from zero.
-				auto d = std::div(beat * fpb_n, fpb_d);
-				if (d.rem > 0) d.quot++; else if (d.rem < 0) d.quot--;
-				return static_cast<int32_t>(d.quot) + frame_origin;
-			};
-
-			// calculate the destination frame according to the direction.
-			if (dir < 0) moveto = pos_from_beat(beat_from_pos(pos - 1));
-			else moveto = pos_from_beat(beat_from_pos(pos) + 1);
+		if (const BPM_Grid grid{ step_n, step_d, editp }) {
+			// calculate the destination frame.
+			if (dir < 0) moveto = grid.pos_from_beat(grid.beat_from_pos(pos - 1));
+			else moveto = grid.pos_from_beat(grid.beat_from_pos(pos) + 1);
 
 			moveto = std::clamp(moveto, 0, len - 1);
 		}
@@ -756,6 +777,7 @@ inline bool menu_select_obj_handler(Menu::ID id, EditHandle* editp)
 		Menu::exedit_command_select_obj, 0, editp, exedit.fp) != FALSE;
 }
 
+// BPM 基準フレーム操作．
 inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
 {
 	int const pos = *exedit.timeline_BPM_frame_origin;
@@ -766,10 +788,23 @@ inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
 	case Menu::ID::BPMMoveOriginCurrent:
 		moveto = fp->exfunc->get_frame(editp) + 1;
 		break;
+	case Menu::ID::BPMFitBarToCurrent:
+		if (const BPM_Grid grid{ *exedit.timeline_BPM_num_beats, 1, editp }) {
+			// find the nearest two measure bars from the current frame.
+			auto curr = fp->exfunc->get_frame(editp);
+			auto b = grid.beat_from_pos(curr);
+			auto l = grid.pos_from_beat(b), r = grid.pos_from_beat(b + 1);
+
+			// move the origin to the one that's nearer (and within the valid range).
+			if (l + r < 2 * curr && pos >= r - curr + 1)
+				moveto -= r - curr; // right.
+			else moveto += curr - l; // left.
+		}
+		break;
 	default: return false;
 	}
 
-	moveto = std::max(moveto, 1); // TODO: necessary?
+	moveto = std::max(moveto, 1);
 	if (pos != moveto) {
 		*exedit.timeline_BPM_frame_origin = moveto;
 		::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
