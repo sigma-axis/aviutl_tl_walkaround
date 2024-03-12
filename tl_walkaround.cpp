@@ -68,7 +68,7 @@ inline constinit struct ExEdit092 {
 	int32_t* timeline_BPM_tempo;			// 0x159190, multiplied by 10'000
 	int32_t* timeline_BPM_frame_origin;		// 0x158d28, 1-based
 	int32_t* timeline_BPM_num_beats;		// 0x178e30
-	//int32_t* timeline_BPM_show_grid;		// 0x196760, 0: hidden, 1: visible
+	int32_t* timeline_BPM_show_grid;		// 0x196760, 0: hidden, 1: visible
 
 private:
 	void init_pointers()
@@ -95,7 +95,7 @@ private:
 		pick_addr(timeline_BPM_tempo,			0x159190);
 		pick_addr(timeline_BPM_frame_origin,	0x158d28);
 		pick_addr(timeline_BPM_num_beats,		0x178e30);
-		//pick_addr(timeline_BPM_show_grid,		0x196760);
+		pick_addr(timeline_BPM_show_grid,		0x196760);
 	}
 } exedit;
 
@@ -807,7 +807,10 @@ inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
 	moveto = std::max(moveto, 1);
 	if (pos != moveto) {
 		*exedit.timeline_BPM_frame_origin = moveto;
-		::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
+
+		// redraw the grid if it's visible.
+		if (*exedit.timeline_BPM_show_grid != 0)
+			::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
 	}
 
 	return false;
@@ -886,7 +889,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.03-beta1"
+#define PLUGIN_VERSION	"v1.10-pre1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
