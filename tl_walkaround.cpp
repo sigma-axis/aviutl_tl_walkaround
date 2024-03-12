@@ -795,8 +795,8 @@ inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
 			auto b = grid.beat_from_pos(curr);
 			auto l = grid.pos_from_beat(b), r = grid.pos_from_beat(b + 1);
 
-			// move the origin to the one that's nearer (and within the valid range).
-			if (l + r < 2 * curr && pos >= r - curr + 1)
+			// move the origin to the nearer side.
+			if (l + r < 2 * curr)
 				moveto -= r - curr; // right.
 			else moveto += curr - l; // left.
 		}
@@ -804,7 +804,6 @@ inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
 	default: return false;
 	}
 
-	moveto = std::max(moveto, 1);
 	if (pos != moveto) {
 		*exedit.timeline_BPM_frame_origin = moveto;
 
@@ -889,7 +888,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.10-pre1"
+#define PLUGIN_VERSION	"v1.10-pre2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
