@@ -30,7 +30,7 @@
 
 以下のコマンドが追加されます．
 
-![編集→TLショトカ移動のメニュー](https://github.com/sigma-axis/aviutl_tl_walkaround/assets/132639613/25678c54-89c2-48ea-afc3-094fe3dba913)
+![編集→TLショトカ移動のメニュー](https://github.com/sigma-axis/aviutl_tl_walkaround/assets/132639613/590d3623-03dc-44d7-b46c-0ec6de5eda4d)
 
 AviUtlのメニューから「ファイル」→「環境設定」→「ショートカットキーの設定」とたどって，これらのコマンドを好みのキーに割り当ててください．
 
