@@ -805,6 +805,7 @@ inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
 	}
 
 	if (pos != moveto) {
+		// apply the new value.
 		*exedit.timeline_BPM_frame_origin = moveto;
 
 		// redraw the grid if it's visible.
@@ -812,6 +813,7 @@ inline bool menu_misc_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp)
 			::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
 	}
 
+	// no need to update the video frame.
 	return false;
 }
 
@@ -861,7 +863,7 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 				Menu::is_seek(id)   ? menu_seek_obj_handler(id, editp, fp) :
 				Menu::is_scroll(id) ? menu_scroll_handler(id, editp, fp) :
 				Menu::is_select(id) ? menu_select_obj_handler(id, editp) :
-				Menu::is_misc(id) ? menu_misc_handler(id, editp, fp) :
+				Menu::is_misc(id)	? menu_misc_handler(id, editp, fp) :
 				false) ? TRUE : FALSE;
 		}
 		break;
@@ -888,7 +890,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.10-pre2"
+#define PLUGIN_VERSION	"v1.10"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
