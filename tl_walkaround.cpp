@@ -231,6 +231,9 @@ struct BPM_Grid {
 	// check if the retrieved parameters are valid.
 	constexpr operator bool() const { return fpb_n > 0 && fpb_d > 0; }
 
+	// フレーム位置から拍数を計算．
+	// フレーム位置 pos 上かそれより左にある拍数線のうち，最も大きい拍数を返す．
+	// (1 フレームに複数の拍数線が重なっている状態でも，そのうち最も大きい拍数が対象．)
 	constexpr auto beat_from_pos(int32_t pos) const {
 		// frame -> beat is by rounding toward zero.
 		pos -= origin;
@@ -239,6 +242,8 @@ struct BPM_Grid {
 		return pos < 0 ? -1 - beats : beats;
 	}
 
+	// 拍数からフレーム位置を計算．
+	// 拍数 beat で描画される拍数線のフレーム位置を返す．
 	/*constexpr */auto pos_from_beat(int64_t beat) const {
 		// beat -> frame is by rounding away from zero.
 		auto d = std::div(beat * fpb_n, fpb_d); // std::div() isn't constexpr at this time.
