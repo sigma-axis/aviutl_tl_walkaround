@@ -209,7 +209,10 @@ struct Timeline {
 };
 
 struct BPM_Grid {
-	constexpr BPM_Grid(int beats_numer, int beats_denom, EditHandle* editp) {
+	constexpr BPM_Grid(int beats_numer, int beats_denom, EditHandle* editp)
+		: BPM_Grid(*exedit.timeline_BPM_frame_origin - 1, beats_numer, beats_denom, editp) {}
+	constexpr BPM_Grid(int origin, int beats_numer, int beats_denom, EditHandle* editp)
+		: origin{ origin } {
 		// find the frame rate.
 		FileInfo fi; // the frame rate is calculated as: fi.video_rate / fi.video_scale.
 		exedit.fp->exfunc->get_file_info(editp, &fi);
@@ -223,9 +226,6 @@ struct BPM_Grid {
 			fpb_d = static_cast<int64_t>(fi.video_scale) * (tempo * beats_denom);
 		}
 		else fpb_n = fpb_d = 0;
-
-		// find the origin of the grid.
-		origin = *exedit.timeline_BPM_frame_origin - 1;
 	}
 
 	// check if the retrieved parameters are valid.
@@ -251,12 +251,12 @@ struct BPM_Grid {
 		return static_cast<int32_t>(d.quot) + origin;
 	}
 
+	// the origin of the BPM grid.
+	int32_t origin;
+
 private:
 	// "frames per beat" represented as a rational number.
 	int64_t fpb_n, fpb_d;
-
-	// the origin of the BPM grid.
-	int32_t origin;
 };
 
 
@@ -895,7 +895,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.10"
+#define PLUGIN_VERSION	"v1.11-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
