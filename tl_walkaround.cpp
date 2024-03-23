@@ -17,8 +17,6 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-#include <CommCtrl.h>
-#pragma comment(lib, "comctl32")
 
 using byte = uint8_t;
 #include <exedit.hpp>
@@ -208,10 +206,11 @@ struct Timeline {
 	}
 };
 
+// BPM グリッドの丸め計算．
 struct BPM_Grid {
-	constexpr BPM_Grid(int beats_numer, int beats_denom, EditHandle* editp)
+	BPM_Grid(int beats_numer, int beats_denom, EditHandle* editp)
 		: BPM_Grid(*exedit.timeline_BPM_frame_origin - 1, beats_numer, beats_denom, editp) {}
-	constexpr BPM_Grid(int origin, int beats_numer, int beats_denom, EditHandle* editp)
+	BPM_Grid(int origin, int beats_numer, int beats_denom, EditHandle* editp)
 		: origin{ origin } {
 		// find the frame rate.
 		FileInfo fi; // the frame rate is calculated as: fi.video_rate / fi.video_scale.
@@ -264,13 +263,6 @@ private:
 // Windows API 利用の補助関数．
 ////////////////////////////////
 
-template<int N>
-bool check_window_class(HWND hwnd, const wchar_t (&classname)[N])
-{
-	wchar_t buf[N + 1];
-	return ::GetClassNameW(hwnd, buf, N + 1) + 1 == N && std::wcscmp(buf, classname) == 0;
-}
-
 // キー入力認識をちょろまかす補助クラス．
 class ForceKeyState {
 	static auto force_key_state(short vkey, uint8_t state)
@@ -280,7 +272,7 @@ class ForceKeyState {
 		return state;
 	}
 
-	static auto state(bool pressed) { return pressed ? key_pressed : key_released; }
+	constexpr static auto state(bool pressed) { return pressed ? key_pressed : key_released; }
 
 	const short vkey;
 	const uint8_t prev;
@@ -307,7 +299,7 @@ class TimelineScrollBar {
 	const uint32_t hv_message;
 
 public:
-	constexpr TimelineScrollBar(bool horizontal)
+	consteval TimelineScrollBar(bool horizontal)
 		: phwnd{ horizontal ? exedit.timeline_h_scroll_bar : exedit.timeline_v_scroll_bar }
 		, pos{ horizontal ? exedit.timeline_h_scroll_pos : exedit.timeline_v_scroll_pos }
 		, page{horizontal ? exedit.timeline_width_in_frames : exedit.timeline_height_in_layers }
@@ -895,7 +887,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.11-beta1"
+#define PLUGIN_VERSION	"v1.11-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
