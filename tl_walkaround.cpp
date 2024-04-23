@@ -29,6 +29,7 @@ using namespace ExEdit;
 ////////////////////////////////
 inline constinit struct ExEdit092 {
 	FilterPlugin* fp;
+	decltype(fp->func_WndProc) func_wndproc;
 	constexpr static const char* info_exedit092 = "拡張編集(exedit) version 0.92 by ＫＥＮくん";
 	bool init(FilterPlugin* this_fp)
 	{
@@ -39,6 +40,7 @@ inline constinit struct ExEdit092 {
 			if (that_fp->information != nullptr &&
 				0 == std::strcmp(that_fp->information, info_exedit092)) {
 				fp = that_fp;
+				func_wndproc = fp->func_WndProc;
 				init_pointers();
 				return true;
 			}
@@ -55,6 +57,7 @@ inline constinit struct ExEdit092 {
 	LayerSetting* LayerSettings;			// 0x188498
 	int32_t* current_scene;					// 0x1a5310
 	int32_t* curr_timeline_scale_len;		// 0x0a3fc8
+	int32_t* curr_timeline_layer_height;	// 0x0a3e20
 	int32_t* scroll_follows_cursor;			// 0x1790d0
 	HWND*	 timeline_h_scroll_bar;			// 0x179108
 	int32_t* timeline_h_scroll_pos;			// 0x1a52f0
@@ -82,6 +85,7 @@ private:
 		pick_addr(LayerSettings,				0x188498);
 		pick_addr(current_scene,				0x1a5310);
 		pick_addr(curr_timeline_scale_len,		0x0a3fc8);
+		pick_addr(curr_timeline_layer_height,	0x0a3e20);
 		pick_addr(scroll_follows_cursor,		0x1790d0);
 		pick_addr(timeline_h_scroll_bar,		0x179108);
 		pick_addr(timeline_h_scroll_pos,		0x1a52f0);
@@ -102,6 +106,24 @@ private:
 // 探索関数コア部．
 ////////////////////////////////
 struct Timeline {
+	// returns the index of the right-most object whose beginning point is at `pos` or less,
+	// `idx_L-1` if couldn't find such, or -2 if the layer is empty.
+	static int find_nearest_index(int pos, int idx_L, int idx_R)
+	{
+		if (idx_L > idx_R) return -2; // 空レイヤー．
+
+		// まず両端のオブジェクトを見る．
+		if (auto obj = exedit.SortedObject[idx_L]; pos < obj->frame_begin) return idx_L - 1;
+		if (auto obj = exedit.SortedObject[idx_R]; obj->frame_begin <= pos) idx_L = idx_R;
+
+		// あとは２分法．
+		while (idx_L + 1 < idx_R) {
+			auto idx = (idx_L + idx_R) >> 1;
+			if (exedit.SortedObject[idx]->frame_begin <= pos) idx_L = idx; else idx_R = idx;
+		}
+		return idx_L;
+	}
+
 	static bool is_active_direct(const Object* obj) {
 		return has_flag(obj->filter_status[0], Object::FilterStatus::Active);
 	}
@@ -130,79 +152,139 @@ struct Timeline {
 #define to_skip(obj)		(skip_inactives && !is_active(obj))
 #define chain_begin(obj)	(skip_midpoints ? chain_begin(obj) : (obj)->frame_begin)
 #define chain_end(obj)		(skip_midpoints ? chain_end(obj) : (obj)->frame_end)
-	static int find_adjacent_left(int pos, int layer, bool skip_midpoints, bool skip_inactives)
+	// idx 以下のオブジェクトの境界や中間点で，条件に当てはまる pos 以下の点を線形に検索．
+	static int find_adjacent_left_core(int idx, int idx_L, int pos, bool skip_midpoints, bool skip_inactives)
 	{
-		// 指定された位置より左にある最も近い境界を探す．
-		int idx_L = exedit.SortedObjectLayerBeginIndex[layer], i0 = idx_L,
-			idx_R = exedit.SortedObjectLayerEndIndex[layer];
-		if (idx_L > idx_R) return 0; // 空レイヤーなので最左端を return.
-
-		// まず左端のオブジェクトを見て，指定位置とわかりやすい位置関係にあるなら return.
-		if (auto obj = exedit.SortedObject[idx_L]; pos <= obj->frame_end + 1)
-			return pos <= obj->frame_begin || to_skip(obj) ? 0 : obj->frame_begin;
-
-		// 右端も見てわかりやすい位置関係なら，後続のループを飛ばすように仕掛ける．
-		if (exedit.SortedObject[idx_R]->frame_begin < pos) idx_L = idx_R;
-
-		// 2分法でインデックスの差が1以下になるまで検索，
-		// idx_L のオブジェクトが pos と重なるか，最も近い左側に位置するように探す．
-		// 途中またわかりやすいものがあったらそこで return... してたけど恩恵を受ける場面は少なそう．
-		while (idx_L + 1 < idx_R) {
-			auto idx = (idx_L + idx_R) >> 1;
-			if (exedit.SortedObject[idx]->frame_begin < pos) idx_L = idx; else idx_R = idx;
-		}
-
-		// 目的オブジェクトが見つかったので return, スキップ対象のときはそこを起点に線形探索．
-		if (auto obj = exedit.SortedObject[idx_L]; !to_skip(obj))
-			// obj->frame_end + 1 < pos の場合，pos の位置には何もないので obj_chain_end() は不要．
-			return pos <= obj->frame_end + 1 ? chain_begin(obj) : obj->frame_end + 1;
+		if (auto obj = exedit.SortedObject[idx]; !to_skip(obj))
+			return pos < obj->frame_end + 1 ? chain_begin(obj) : chain_end(obj) + 1;
 
 		// 無効でない最も近いオブジェクトを探すのは線形探索しか方法がない．
-		while (i0 <= --idx_L) {
-			// 初期 idx_L が無効オブジェクトでスキップされたという前提があるため，
+		while (idx_L <= --idx) {
+			// 初期 idx が無効オブジェクトでスキップされたという前提があるため，
 			// 最初に見つかった有効オブジェクトの終了点は中間点でなくオブジェクト境界になる．
 			// なので skip_midpoints の確認や obj_chain_end() 呼び出しは必要ない．
-			if (auto obj = exedit.SortedObject[idx_L]; is_active(obj))
+			if (auto obj = exedit.SortedObject[idx]; is_active(obj))
 				return obj->frame_end + 1;
 		}
 		return 0;
 	}
-
-	// the return value of -1 stands for the end of the scene.
-	static int find_adjacent_right(int pos, int layer, bool skip_midpoints, bool skip_inactives)
+	// idx 以上のオブジェクトの境界や中間点で，条件に当てはまる pos 以上の点を線形に検索．
+	static int find_adjacent_right_core(int idx, int idx_R, int pos, bool skip_midpoints, bool skip_inactives)
 	{
-		// 上の関数の左右入れ替えただけ．
-		int idx_L = exedit.SortedObjectLayerBeginIndex[layer],
-			idx_R = exedit.SortedObjectLayerEndIndex[layer], i1 = idx_R;
-		if (idx_L > idx_R) return -1;
+		// 上の関数の左右逆．
+		if (auto obj = exedit.SortedObject[idx]; !to_skip(obj))
+			return pos <= obj->frame_begin ? obj->frame_begin : chain_end(obj) + 1;
 
-		if (auto obj = exedit.SortedObject[idx_R]; obj->frame_begin <= pos)
-			return pos < obj->frame_end + 1 && !to_skip(obj) ? obj->frame_end + 1 : -1;
-
-		if (pos < exedit.SortedObject[idx_L]->frame_end + 1) idx_R = idx_L;
-
-		while (idx_L + 1 < idx_R) {
-			auto idx = (idx_L + idx_R) >> 1;
-			if (exedit.SortedObject[idx]->frame_end + 1 <= pos) idx_L = idx; else idx_R = idx;
-		}
-
-		if (auto obj = exedit.SortedObject[idx_R]; !to_skip(obj))
-			return pos < obj->frame_begin ? obj->frame_begin : chain_end(obj) + 1;
-
-		while (++idx_R <= i1) {
-			if (auto obj = exedit.SortedObject[idx_R]; is_active(obj))
+		while (++idx <= idx_R) {
+			if (auto obj = exedit.SortedObject[idx]; is_active(obj))
 				return obj->frame_begin;
 		}
 		return -1;
 	}
+	static int find_adjacent_left(int pos, int layer, bool skip_midpoints, bool skip_inactives)
+	{
+		// 指定された位置より左にある最も近い境界を探す．
+		int idx_L = exedit.SortedObjectLayerBeginIndex[layer],
+			idx_R = exedit.SortedObjectLayerEndIndex[layer];
+
+		// pos より左側に開始点のあるオブジェクトの index を取得．
+		int idx = find_nearest_index(pos - 1, idx_L, idx_R);
+		if (idx < idx_L) return 0; // 空レイヤー or 左側に何もない．
+
+		// そこを起点に線形探索してスキップ対象を除外．
+		return find_adjacent_left_core(idx, idx_L, pos - 1, skip_midpoints, skip_inactives);
+	}
 #undef to_skip
 #undef chain_begin
 #undef chain_end
+
+	// the return value of -1 stands for the end of the scene.
+	static int find_adjacent_right(int pos, int layer, bool skip_midpoints, bool skip_inactives)
+	{
+		// 上の関数の左右逆版．
+		int idx_L = exedit.SortedObjectLayerBeginIndex[layer],
+			idx_R = exedit.SortedObjectLayerEndIndex[layer];
+
+		// pos の位置かそれより左側に開始点のあるオブジェクトを取得．
+		int idx = find_nearest_index(pos, idx_L, idx_R);
+
+		// pos より右側に終了点のあるオブジェクトの index に修正．
+		if (idx < -1) return -1; // 空レイヤー．
+		else if (idx < idx_L) idx = idx_L;
+		else if (exedit.SortedObject[idx]->frame_end + 1 <= pos) {
+			idx++;
+			if (idx > idx_R) return -1; // 最右端．
+		}
+
+		// そこを起点に線形探索してスキップ対象を除外．
+		return find_adjacent_right_core(idx, idx_R, pos + 1, skip_midpoints, skip_inactives);
+	}
+
+	static std::tuple<int, int> find_interval(int pos, int layer, bool skip_midpoints, bool skip_inactives)
+	{
+		int idx_L = exedit.SortedObjectLayerBeginIndex[layer],
+			idx_R = exedit.SortedObjectLayerEndIndex[layer];
+
+		// pos の位置かそれより左側に開始点のあるオブジェクトを取得．
+		int idx = find_nearest_index(pos, idx_L, idx_R);
+
+		// まずは左端．
+		int pos_l = idx < 0 ? 0 :
+			find_adjacent_left_core(idx, idx_L, pos, skip_midpoints, skip_inactives);
+
+		// そして右端．
+		// pos より右側に終了点のあるオブジェクトの index に修正．
+		if (idx < -1) idx = idx_R + 1; // 空レイヤー．
+		else if (idx < idx_L) idx = idx_L;
+		else if (exedit.SortedObject[idx]->frame_end + 1 <= pos) idx++;
+		int pos_r = idx > idx_R ? -1 :
+			find_adjacent_right_core(idx, idx_R, pos + 1, skip_midpoints, skip_inactives);
+
+		return { pos_l, pos_r };
+	}
 	// 「-1 で最右端」規格がめんどくさいのでラップ．
 	static int find_adjacent_right(int pos, int layer,
 		bool skip_midpoints, bool skip_inactives, int len) {
 		pos = find_adjacent_right(pos, layer, skip_midpoints, skip_inactives);
 		return 0 <= pos && pos < len ? pos : len - 1;
+	}
+
+	// 座標変換．
+private:
+	// タイムラインの最上段レイヤーの左上座標．
+	constexpr static int x_leftmost = 64, y_topmost = 42;
+public:
+	static inline int PointToFrame(int x)
+	{
+		x -= x_leftmost;
+		x *= 10'000; x /= *exedit.curr_timeline_scale_len;
+		x += *exedit.timeline_h_scroll_pos;
+		if (x < 0) x = 0;
+
+		return x;
+	}
+	static inline int FrameToPoint(int f)
+	{
+		f -= *exedit.timeline_h_scroll_pos;
+		{
+			// possibly overflow; curr_timeline_scale_len is at most 100'000 (> 2^16).
+			int64_t F = f;
+			F *= *exedit.curr_timeline_scale_len; F /= 10'000;
+			f = static_cast<int32_t>(F);
+		}
+		f += x_leftmost;
+
+		return f;
+	}
+	// シーンによらず最上段レイヤーは 0 扱い．
+	static int PointToLayer(int y)
+	{
+		y -= y_topmost;
+		y /= *exedit.curr_timeline_layer_height;
+		y += *exedit.timeline_v_scroll_pos;
+		y = std::clamp(y, 0, 99);
+
+		return y;
 	}
 };
 
@@ -350,18 +432,58 @@ inline constinit struct Settings {
 	int seek_amount = tl_scroll_h.scroll_raw;
 	int scroll_amount = tl_scroll_h.scroll_raw;
 
+	enum class DragButton : uint8_t {
+		none = 0,
+		wheel = 1,
+		x1 = 2,
+		x2 = 3,
+	};
+	DragButton click_button = DragButton::none;
+	uint8_t click_snap_range = 20;
+	constexpr static uint8_t click_snap_range_min = 2, click_snap_range_max = 128;
+	enum class ModKey : uint8_t {
+		off,
+		on,
+		shift,
+		inv_shift,
+		ctrl,
+		inv_ctrl,
+		// no alt; may conflict with InputPipePlugin.
+	};
+	ModKey click_skip_midpoints = ModKey::off,
+		click_skip_inactives = ModKey::off;
+
 	void load(const char* ini_file)
 	{
 		auto read_raw = [&](auto def, const char* section, const char* key) {
 			return static_cast<decltype(def)>(
 				::GetPrivateProfileIntA(section, key, static_cast<int32_t>(def), ini_file));
 		};
-#define load_gen(tgt, section, read, write)	tgt = read(read_raw(write(tgt), section, #tgt))
-#define load_int(tgt, section)		load_gen(tgt, section, /*id*/, /*id*/)
-#define load_ratio(tgt, section)	load_gen(tgt, section, \
+		auto read_modkey = [&](const char* section, const char* key) {
+			char buf[32];
+			::GetPrivateProfileStringA(section, key, "0", buf, std::size(buf), ini_file);
+
+			// doesn't check the word entirely. if the first character matches, it's enough.
+			using enum ModKey;
+			bool inv = false;
+			const char* p = &buf[0];
+			switch (*p) {
+			case '0': return off;
+			case '1': return on;
+			case '!': inv = true; p++; break;
+			}
+			switch (*p) {
+			case 's': case 'S': return inv ? inv_shift : shift;
+			case 'c': case 'C': return inv ? inv_ctrl : ctrl;
+			default: return off;
+			}
+		};
+	#define load_gen(tgt, section, read, write)	tgt = read(read_raw(write(tgt), section, #tgt))
+	#define load_int(tgt, section)		load_gen(tgt, section, /*id*/, /*id*/)
+	#define load_ratio(tgt, section)	load_gen(tgt, section, \
 			[](auto y) { return y * (tl_scroll_h.scroll_raw / config_rate_prec); }, \
 			[](auto x) { return x / (tl_scroll_h.scroll_raw / config_rate_prec); })
-#define load_bool(tgt, section)		load_gen(tgt, section, \
+	#define load_bool(tgt, section)		load_gen(tgt, section, \
 			0 != , [](auto x) { return x ? 1 : 0; })
 
 		load_bool	(skip_inactive_objects,	"skips");
@@ -376,11 +498,16 @@ inline constinit struct Settings {
 		load_gen	(nth_beat,				"bpm_grid",
 			[](auto y) { return std::clamp(y, bpm_nth_beat_min, bpm_nth_beat_max); }, /*id*/);
 
+		load_int	(click_button,			"mouse");
+		load_gen	(click_snap_range,		"mouse",
+			[](auto y) { return std::clamp(y, click_snap_range_min, click_snap_range_max); }, /*id*/);
+		click_skip_midpoints = read_modkey("mouse", "click_skip_midpoints");
+		click_skip_inactives = read_modkey("mouse", "click_skip_inactives");
 
-#undef load_bool
-#undef load_ratio
-#undef load_int
-#undef load_gen
+	#undef load_bool
+	#undef load_ratio
+	#undef load_int
+	#undef load_gen
 
 		constexpr int max_factor = 16;
 		seek_amount = std::clamp(seek_amount, tl_scroll_h.scroll_raw / max_factor, tl_scroll_h.scroll_raw * max_factor);
@@ -410,6 +537,141 @@ inline void load_settings(HMODULE h_dll)
 
 	settings.load(path);
 }
+
+
+////////////////////////////////
+// マウス操作の追加．
+////////////////////////////////
+class Drag {
+	static inline constinit UINT mes_down = 0; // WM_*BUTTONDOWN.
+	static inline constinit uint16_t btn_var = 0; // XBUTTON1 or XBUTTON2.
+
+	constexpr static bool key2flag(Settings::ModKey k, bool key_ctrl, bool key_shift) {
+		switch (k) {
+			using enum Settings::ModKey;
+		case on:		return true;
+		case shift:		return key_shift;
+		case inv_shift:	return !key_shift;
+		case ctrl:		return key_ctrl;
+		case inv_ctrl:	return !key_ctrl;
+		case off: default: return false;
+		}
+	}
+	static bool Seek(int mouse_x, int mouse_y, bool ctrl, bool shift,
+		AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
+	{
+		constexpr int num_layers = 100;
+		const auto pos = fp->exfunc->get_frame(editp);
+		const auto len = fp->exfunc->get_frame_n(editp);
+
+		auto mouse_frame = Timeline::PointToFrame(mouse_x);
+		auto mouse_layer = Timeline::PointToLayer(mouse_y);
+		mouse_layer += num_layers * (*exedit.current_scene);
+
+		auto [l, r] = Timeline::find_interval(mouse_frame, mouse_layer,
+			key2flag(settings.click_skip_midpoints, ctrl, shift),
+			key2flag(settings.click_skip_inactives, ctrl, shift));
+		if (r < 0) r = len - 1;
+
+		int moveto = 2 * mouse_frame < l + r ? l : r;
+		moveto = std::clamp(moveto, 0, len - 1);
+		if (moveto != pos &&
+			(settings.click_snap_range >= settings.click_snap_range_max ||
+				std::abs(Timeline::FrameToPoint(moveto) - mouse_x) < settings.click_snap_range)) {
+
+			ForceKeyState shift(settings.suppress_shift ?
+				VK_SHIFT : ForceKeyState::vkey_invalid, false);
+			fp->exfunc->set_frame(editp, moveto);
+			return true;
+		}
+
+		return false;
+	}
+
+public:
+	static inline bool is_dragging = false;
+	static BOOL func_wndProc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHandle* editp, FilterPlugin* fp)
+	{
+		constexpr auto do_seek = [](LPARAM lparam, WPARAM wparam, EditHandle* editp, FilterPlugin* fp) {
+			return Seek(static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16),
+				(wparam & MK_CONTROL) != 0, (wparam & MK_SHIFT) != 0, editp, fp);
+		};
+		if (is_dragging) {
+			switch (message) {
+			case WM_MOUSEMOVE:
+				if (fp->exfunc->is_editing(editp) && !fp->exfunc->is_saving(editp))
+					return do_seek(lparam, wparam, editp, fp) ? TRUE : FALSE;
+
+				[[fallthrough]];
+			case WM_LBUTTONDOWN:
+			case WM_RBUTTONDOWN:
+			case WM_MBUTTONDOWN:
+			case WM_XBUTTONDOWN:
+			case WM_LBUTTONUP:
+			case WM_RBUTTONUP:
+			case WM_MBUTTONUP:
+			case WM_XBUTTONUP:
+				// any mouse button would stop this drag.
+				is_dragging = false;
+				::ReleaseCapture();
+				return FALSE;
+			case WM_CAPTURECHANGED:
+				// drag aborted, turn out of the dragging state.
+				is_dragging = false;
+				return FALSE;
+
+				// prevent the mouse cursor to change.
+			case WM_KEYDOWN:
+			case WM_SYSKEYDOWN:
+				if (wparam == VK_ESCAPE) {
+					// ESC key should stop dragging too.
+					is_dragging = false;
+					::ReleaseCapture();
+					return FALSE;
+				}
+				[[fallthrough]];
+			case WM_KEYUP:
+			case WM_SYSKEYUP:
+				if (static constinit bool callback_guard = false;
+					!callback_guard) {
+					callback_guard = true;
+					::SendMessageW(fp->hwnd_parent, message, wparam, lparam);
+					callback_guard = true;
+				}
+				else break;
+				return FALSE;
+			}
+		}
+		else if (message == mes_down && (wparam >> 16) == btn_var) {
+			// turn into the dragging state, overriding mouse behavior.
+			is_dragging = true;
+			::SetCapture(hwnd);
+			::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
+
+			return do_seek(lparam, wparam, editp, fp) ? TRUE : FALSE;
+		}
+		return exedit.func_wndproc(hwnd, message, wparam, lparam, editp, fp);
+	}
+	static void force_cancel() {
+		if (!is_dragging) return;
+		is_dragging = false;
+		::ReleaseCapture();
+	}
+
+	static void init()
+	{
+		switch (settings.click_button) {
+			using enum Settings::DragButton;
+		case wheel:	mes_down = WM_MBUTTONDOWN; btn_var = 0;			break;
+		case x1:	mes_down = WM_XBUTTONDOWN; btn_var = XBUTTON1;	break;
+		case x2:	mes_down = WM_XBUTTONDOWN; btn_var = XBUTTON2;	break;
+		case none: default: return;
+		}
+
+		// as this feature is enabled, replace the callback function.
+		exedit.fp->func_WndProc = func_wndProc_detour;
+	}
+};
 
 
 ////////////////////////////////
@@ -590,7 +852,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	int moveto = pos;
 	switch (id) {
 		{
-		bool skip_midpoints;
+			bool skip_midpoints;
 	case Menu::StepObjLeft: skip_midpoints = true; goto step_left;
 	case Menu::StepMidptLeft: skip_midpoints = false; goto step_left;
 	step_left:
@@ -617,7 +879,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		break;
 	}
 
-		// 以上 2 つの左右入れ替え．
+	// 以上 2 つの左右入れ替え．
 	case Menu::StepObjRight: skip_midpoints = true; goto step_right;
 	case Menu::StepMidptRight: skip_midpoints = false; goto step_right;
 	step_right:
@@ -642,8 +904,8 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		break;
 	}
 
-#define chain_begin(obj)	(skip_midpoints ? Timeline::chain_begin(obj) : (obj)->frame_begin)
-#define chain_end(obj)		(skip_midpoints ? Timeline::chain_end(obj) : (obj)->frame_end)
+	#define chain_begin(obj)	(skip_midpoints ? Timeline::chain_begin(obj) : (obj)->frame_begin)
+	#define chain_end(obj)		(skip_midpoints ? Timeline::chain_end(obj) : (obj)->frame_end)
 		// 現在選択中のオブジェクト or 中間点区間まで現在フレームを移動．
 	case Menu::StepIntoSelObj: skip_midpoints = true; goto step_into_selected;
 	case Menu::StepIntoSelMidpt: skip_midpoints = false; goto step_into_selected;
@@ -654,8 +916,8 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 			else if (auto end = chain_end(&sel_obj); end < pos) moveto = end;
 		}
 		break;
-#undef chain_begin
-#undef chain_end
+	#undef chain_begin
+	#undef chain_end
 		}
 
 		{
@@ -838,6 +1100,9 @@ BOOL func_init(FilterPlugin* fp)
 	// 設定ロード．
 	load_settings(fp->dll_hinst);
 
+	// 必要ならドラッグ操作のために関数乗っ取り．
+	Drag::init();
+
 	return TRUE;
 }
 
@@ -846,6 +1111,9 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 	using Message = FilterPlugin::WindowMessage;
 	switch (message) {
 	case Message::Exit:
+		// ドラッグ操作中なら解除．関数の差し戻しは不必要．
+		Drag::force_cancel();
+
 		// message-only window を削除．必要ないかもしれないけど．
 		fp->hwnd = nullptr; ::DestroyWindow(hwnd);
 		break;
@@ -857,10 +1125,10 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 
 			// 系統によって処理の毛色が違うので分岐．
 			return (
-				Menu::is_seek(id)   ? menu_seek_obj_handler(id, editp, fp) :
-				Menu::is_scroll(id) ? menu_scroll_handler(id, editp, fp) :
-				Menu::is_select(id) ? menu_select_obj_handler(id, editp) :
-				Menu::is_misc(id)	? menu_misc_handler(id, editp, fp) :
+				Menu::is_seek(id)   ? menu_seek_obj_handler(id, editp, fp)	:
+				Menu::is_scroll(id) ? menu_scroll_handler(id, editp, fp)	:
+				Menu::is_select(id) ? menu_select_obj_handler(id, editp)	:
+				Menu::is_misc(id)	? menu_misc_handler(id, editp, fp)		:
 				false) ? TRUE : FALSE;
 		}
 		break;
@@ -887,7 +1155,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.11-beta2"
+#define PLUGIN_VERSION	"v1.20-beta3"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
