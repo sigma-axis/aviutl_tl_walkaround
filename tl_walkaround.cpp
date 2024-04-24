@@ -107,14 +107,14 @@ private:
 ////////////////////////////////
 struct Timeline {
 	// returns the index of the right-most object whose beginning point is at `pos` or less,
-	// `idx_L-1` if couldn't find such, or -2 if the layer is empty.
+	// `idx_L-1` if couldn't find such.
 	static int find_nearest_index(int pos, int idx_L, int idx_R)
 	{
-		if (idx_L > idx_R) return -2; // 空レイヤー．
+		if (idx_L > idx_R) return idx_L - 1; // 空レイヤー．
 
 		// まず両端のオブジェクトを見る．
-		if (auto obj = exedit.SortedObject[idx_L]; pos < obj->frame_begin) return idx_L - 1;
-		if (auto obj = exedit.SortedObject[idx_R]; obj->frame_begin <= pos) idx_L = idx_R;
+		if (exedit.SortedObject[idx_L]->frame_begin > pos) return idx_L - 1;
+		if (exedit.SortedObject[idx_R]->frame_begin <= pos) idx_L = idx_R;
 
 		// あとは２分法．
 		while (idx_L + 1 < idx_R) {
@@ -181,6 +181,9 @@ struct Timeline {
 		}
 		return -1;
 	}
+#undef to_skip
+#undef chain_begin
+#undef chain_end
 	static int find_adjacent_left(int pos, int layer, bool skip_midpoints, bool skip_inactives)
 	{
 		// 指定された位置より左にある最も近い境界を探す．
@@ -194,9 +197,6 @@ struct Timeline {
 		// そこを起点に線形探索してスキップ対象を除外．
 		return find_adjacent_left_core(idx, idx_L, pos - 1, skip_midpoints, skip_inactives);
 	}
-#undef to_skip
-#undef chain_begin
-#undef chain_end
 
 	// the return value of -1 stands for the end of the scene.
 	static int find_adjacent_right(int pos, int layer, bool skip_midpoints, bool skip_inactives)
@@ -209,12 +209,9 @@ struct Timeline {
 		int idx = find_nearest_index(pos, idx_L, idx_R);
 
 		// pos より右側に終了点のあるオブジェクトの index に修正．
-		if (idx < -1) return -1; // 空レイヤー．
-		else if (idx < idx_L) idx = idx_L;
-		else if (exedit.SortedObject[idx]->frame_end + 1 <= pos) {
-			idx++;
-			if (idx > idx_R) return -1; // 最右端．
-		}
+		if (idx < idx_L) idx = idx_L;
+		else if (exedit.SortedObject[idx]->frame_end + 1 <= pos) idx++;
+		if (idx > idx_R) return -1; // 最右端．
 
 		// そこを起点に線形探索してスキップ対象を除外．
 		return find_adjacent_right_core(idx, idx_R, pos + 1, skip_midpoints, skip_inactives);
@@ -229,13 +226,12 @@ struct Timeline {
 		int idx = find_nearest_index(pos, idx_L, idx_R);
 
 		// まずは左端．
-		int pos_l = idx < 0 ? 0 :
+		int pos_l = idx < idx_L ? 0 :
 			find_adjacent_left_core(idx, idx_L, pos, skip_midpoints, skip_inactives);
 
 		// そして右端．
 		// pos より右側に終了点のあるオブジェクトの index に修正．
-		if (idx < -1) idx = idx_R + 1; // 空レイヤー．
-		else if (idx < idx_L) idx = idx_L;
+		if (idx < idx_L) idx = idx_L;
 		else if (exedit.SortedObject[idx]->frame_end + 1 <= pos) idx++;
 		int pos_r = idx > idx_R ? -1 :
 			find_adjacent_right_core(idx, idx_R, pos + 1, skip_midpoints, skip_inactives);
@@ -253,11 +249,13 @@ struct Timeline {
 private:
 	// タイムラインの最上段レイヤーの左上座標．
 	constexpr static int x_leftmost = 64, y_topmost = 42;
+	// タイムラインズームサイズの分母．
+	constexpr static int scale_denom = 10'000;
 public:
 	static inline int PointToFrame(int x)
 	{
 		x -= x_leftmost;
-		x *= 10'000; x /= *exedit.curr_timeline_scale_len;
+		x *= scale_denom; x /= *exedit.curr_timeline_scale_len;
 		x += *exedit.timeline_h_scroll_pos;
 		if (x < 0) x = 0;
 
@@ -269,7 +267,7 @@ public:
 		{
 			// possibly overflow; curr_timeline_scale_len is at most 100'000 (> 2^16).
 			int64_t F = f;
-			F *= *exedit.curr_timeline_scale_len; F /= 10'000;
+			F *= *exedit.curr_timeline_scale_len; F /= scale_denom;
 			f = static_cast<int32_t>(F);
 		}
 		f += x_leftmost;
@@ -384,7 +382,7 @@ public:
 	consteval TimelineScrollBar(bool horizontal)
 		: phwnd{ horizontal ? exedit.timeline_h_scroll_bar : exedit.timeline_v_scroll_bar }
 		, pos{ horizontal ? exedit.timeline_h_scroll_pos : exedit.timeline_v_scroll_pos }
-		, page{horizontal ? exedit.timeline_width_in_frames : exedit.timeline_height_in_layers }
+		, page{ horizontal ? exedit.timeline_width_in_frames : exedit.timeline_height_in_layers }
 		, hv_message{ static_cast<uint32_t>(horizontal ? WM_HSCROLL : WM_VSCROLL) } {}
 
 	void set_pos(int pos, EditHandle* editp) const
@@ -420,38 +418,68 @@ inline constexpr TimelineScrollBar tl_scroll_v { false };
 inline constinit struct Settings {
 	constexpr static int config_rate_prec = 1000; // 設定でスクロール量などの比率を指定する最小単位の逆数．
 
-	bool skip_inactive_objects = false;
-	bool skip_hidden_layers = false;
+	struct Skips {
+		bool skip_inactive_objects = false;
+		bool skip_hidden_layers = false;
+	} skips;
 
-	bool suppress_shift = true;
+	struct Keyboard {
+		bool suppress_shift = true;
+	} keyboard;
 
-	uint8_t nth_beat = 3;
-	constexpr static uint8_t bpm_nth_beat_min = 2, bpm_nth_beat_max = 128;
+	struct BPMGrid {
+		uint8_t nth_beat = 3;
+		constexpr static uint8_t nth_beat_min = 2, nth_beat_max = 128;
+	} bpm_grid;
 
-	int layer_count = 1;
-	int seek_amount = tl_scroll_h.scroll_raw;
-	int scroll_amount = tl_scroll_h.scroll_raw;
+	struct Scroll {
+		int layer_count = 1;
+		int seek_amount = tl_scroll_h.scroll_raw;
+		int scroll_amount = tl_scroll_h.scroll_raw;
+
+	private:
+		constexpr static int seek_factor = 16, scroll_factor = 16;
+	public:
+		constexpr static int
+			layer_count_min = 1, layer_count_max = 99,
+			seek_amount_min = tl_scroll_h.scroll_raw / seek_factor,
+			seek_amount_max = tl_scroll_h.scroll_raw * seek_factor,
+			scroll_amount_min = tl_scroll_h.scroll_raw / scroll_factor,
+			scroll_amount_max = tl_scroll_h.scroll_raw * scroll_factor;
+	} scroll;
 
 	enum class DragButton : uint8_t {
-		none = 0,
-		wheel = 1,
-		x1 = 2,
-		x2 = 3,
+		none		= 0,
+		// left can't be assigned.
+		right_shift	= 1,
+		wheel		= 2,
+		x1			= 3,
+		x2			= 4,
 	};
-	DragButton click_button = DragButton::none;
-	uint8_t click_snap_range = 20;
-	constexpr static uint8_t click_snap_range_min = 2, click_snap_range_max = 128;
 	enum class ModKey : uint8_t {
 		off,
 		on,
-		shift,
-		inv_shift,
 		ctrl,
 		inv_ctrl,
+		shift,
+		inv_shift,
 		// no alt; may conflict with InputPipePlugin.
 	};
-	ModKey click_skip_midpoints = ModKey::off,
-		click_skip_inactives = ModKey::off;
+	struct Mouse {
+		DragButton obj_button = DragButton::none;
+		ModKey obj_condition = ModKey::on,
+			obj_skip_midpoints = ModKey::ctrl,
+			obj_skip_inactives = ModKey::off;
+
+		DragButton bpm_button = DragButton::none;
+		ModKey bpm_condition = ModKey::on,
+			bpm_stop_beat = ModKey::on,
+			bpm_stop_4th_beat = ModKey::shift,
+			bpm_stop_nth_beat = ModKey::off;
+
+		uint8_t snap_range = 20;
+		constexpr static uint8_t snap_range_min = 2, snap_range_max = 128;
+	} mouse;
 
 	void load(const char* ini_file)
 	{
@@ -478,43 +506,45 @@ inline constinit struct Settings {
 			default: return off;
 			}
 		};
-	#define load_gen(tgt, section, read, write)	tgt = read(read_raw(write(tgt), section, #tgt))
-	#define load_int(tgt, section)		load_gen(tgt, section, /*id*/, /*id*/)
+	#define load_gen(tgt, section, read, write)	section.tgt = read(read_raw(write(section.tgt), #section, #tgt))
+	#define load_int(tgt, section)		load_gen(tgt, section,\
+		[&](auto y) { return std::clamp(y, section.tgt##_min, section.tgt##_max); }, /*id*/)
+	#define load_enum(tgt, section)		load_gen(tgt, section, /*id*/, /*id*/)
+	#define load_mkey(tgt, section)		section.tgt = read_modkey(#section, #tgt)
 	#define load_ratio(tgt, section)	load_gen(tgt, section, \
 			[](auto y) { return y * (tl_scroll_h.scroll_raw / config_rate_prec); }, \
 			[](auto x) { return x / (tl_scroll_h.scroll_raw / config_rate_prec); })
 	#define load_bool(tgt, section)		load_gen(tgt, section, \
 			0 != , [](auto x) { return x ? 1 : 0; })
 
-		load_bool	(skip_inactive_objects,	"skips");
-		load_bool	(skip_hidden_layers,	"skips");
+		load_bool	(skip_inactive_objects,	skips);
+		load_bool	(skip_hidden_layers,	skips);
 
-		load_ratio	(seek_amount,			"scroll");
-		load_ratio	(scroll_amount,			"scroll");
-		load_int	(layer_count,			"scroll");
+		load_ratio	(seek_amount,			scroll);
+		load_ratio	(scroll_amount,			scroll);
+		load_int	(layer_count,			scroll);
 
-		load_bool	(suppress_shift,		"keyboard");
+		load_bool	(suppress_shift,		keyboard);
 
-		load_gen	(nth_beat,				"bpm_grid",
-			[](auto y) { return std::clamp(y, bpm_nth_beat_min, bpm_nth_beat_max); }, /*id*/);
+		load_int	(nth_beat,				bpm_grid);
 
-		load_int	(click_button,			"mouse");
-		load_gen	(click_snap_range,		"mouse",
-			[](auto y) { return std::clamp(y, click_snap_range_min, click_snap_range_max); }, /*id*/);
-		click_skip_midpoints = read_modkey("mouse", "click_skip_midpoints");
-		click_skip_inactives = read_modkey("mouse", "click_skip_inactives");
+		load_enum	(obj_button,			mouse);
+		load_mkey	(obj_condition,			mouse);
+		load_mkey	(obj_skip_midpoints,	mouse);
+		load_mkey	(obj_skip_inactives,	mouse);
+
+		load_enum	(bpm_button,			mouse);
+		load_mkey	(bpm_condition,			mouse);
+		load_mkey	(bpm_stop_beat,			mouse);
+		load_mkey	(bpm_stop_4th_beat,		mouse);
+		load_mkey	(bpm_stop_nth_beat,		mouse);
+
+		load_int	(snap_range,			mouse);
 
 	#undef load_bool
 	#undef load_ratio
 	#undef load_int
 	#undef load_gen
-
-		constexpr int max_factor = 16;
-		seek_amount = std::clamp(seek_amount, tl_scroll_h.scroll_raw / max_factor, tl_scroll_h.scroll_raw * max_factor);
-		scroll_amount = std::clamp(scroll_amount, tl_scroll_h.scroll_raw / max_factor, tl_scroll_h.scroll_raw * max_factor);
-
-		constexpr int num_layers = 100;
-		layer_count = std::clamp(layer_count, 1, num_layers - 1);
 	}
 } settings;
 
@@ -543,8 +573,13 @@ inline void load_settings(HMODULE h_dll)
 // マウス操作の追加．
 ////////////////////////////////
 class Drag {
-	static inline constinit UINT mes_down = 0; // WM_*BUTTONDOWN.
-	static inline constinit uint16_t btn_var = 0; // XBUTTON1 or XBUTTON2.
+	// WM_*BUTTONDOWN.
+	static inline constinit UINT obj_mes_down = WM_NULL, bpm_mes_down = WM_NULL;
+	// all flags in wparam to be checked.
+	static inline constinit uint32_t obj_btn_flags = ~0, bpm_btn_flags = ~0;
+	// flags in wparam that should be one.
+	static inline constinit uint32_t obj_xor_flags = ~0, bpm_xor_flags = ~0;
+	static inline int8_t drag_state = 0; // 0: normal, 1: obj-wise drag, 2: bpm-wise drag.
 
 	constexpr static bool key2flag(Settings::ModKey k, bool key_ctrl, bool key_shift) {
 		switch (k) {
@@ -557,46 +592,82 @@ class Drag {
 		case off: default: return false;
 		}
 	}
-	static bool Seek(int mouse_x, int mouse_y, bool ctrl, bool shift,
+	static bool ObjSeek(int mouse_x, int mouse_y, bool ctrl, bool shift,
 		AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
 	{
-		constexpr int num_layers = 100;
 		const auto pos = fp->exfunc->get_frame(editp);
 		const auto len = fp->exfunc->get_frame_n(editp);
 
+		// calculate the frame number and layer at the mouse position.
+		constexpr int num_layers = 100;
 		auto mouse_frame = Timeline::PointToFrame(mouse_x);
 		auto mouse_layer = Timeline::PointToLayer(mouse_y);
 		mouse_layer += num_layers * (*exedit.current_scene);
 
+		// calculate the smallest interval containing `mouse_frame`.
 		auto [l, r] = Timeline::find_interval(mouse_frame, mouse_layer,
-			key2flag(settings.click_skip_midpoints, ctrl, shift),
-			key2flag(settings.click_skip_inactives, ctrl, shift));
+			key2flag(settings.mouse.obj_skip_midpoints, ctrl, shift),
+			key2flag(settings.mouse.obj_skip_inactives, ctrl, shift));
 		if (r < 0) r = len - 1;
 
+		// then seek to either left or right if it's near enough to the mouse.
+		return SeelLeftRight(l, r, mouse_frame, pos, len, mouse_x, fp, editp);
+	}
+	static bool BPMSeek(int mouse_x, int mouse_y, bool ctrl, bool shift,
+		AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
+	{
+		const auto pos = fp->exfunc->get_frame(editp);
+		const auto len = fp->exfunc->get_frame_n(editp);
+
+		auto mouse_frame = Timeline::PointToFrame(mouse_x);
+
+		// find which `strength` of beat to stop.
+		// priority: nth > 4th > one beat > per measure.
+		int numer, denom;
+		if (key2flag(settings.mouse.bpm_stop_nth_beat, ctrl, shift))
+			numer = 1, denom = settings.bpm_grid.nth_beat;
+		else if (key2flag(settings.mouse.bpm_stop_4th_beat, ctrl, shift))
+			numer = 1, denom = 4;
+		else if (key2flag(settings.mouse.bpm_stop_beat, ctrl, shift))
+			numer = 1, denom = 1;
+		else numer = *exedit.timeline_BPM_num_beats, denom = 1;
+
+		// prepare BPM_Grid struct.
+		BPM_Grid grid{ numer, denom, editp };
+
+		// calculate the nearest left beat.
+		auto beat = grid.beat_from_pos(mouse_frame);
+
+		// seek to either `beat` or `beat + 1`.
+		return SeelLeftRight(grid.pos_from_beat(beat), grid.pos_from_beat(beat + 1),
+			mouse_frame, pos, len, mouse_x, fp, editp);
+	}
+	static bool SeelLeftRight(int l, int r, int mouse_frame, int32_t pos, int32_t len, int mouse_x,
+		AviUtl::FilterPlugin* fp, AviUtl::EditHandle* editp)
+	{
 		int moveto = 2 * mouse_frame < l + r ? l : r;
 		moveto = std::clamp(moveto, 0, len - 1);
 		if (moveto != pos &&
-			(settings.click_snap_range >= settings.click_snap_range_max ||
-				std::abs(Timeline::FrameToPoint(moveto) - mouse_x) < settings.click_snap_range)) {
+			(settings.mouse.snap_range >= settings.mouse.snap_range_max ||
+				std::abs(Timeline::FrameToPoint(moveto) - mouse_x) < settings.mouse.snap_range)) {
 
-			ForceKeyState shift(settings.suppress_shift ?
+			ForceKeyState shift(settings.keyboard.suppress_shift ?
 				VK_SHIFT : ForceKeyState::vkey_invalid, false);
 			fp->exfunc->set_frame(editp, moveto);
 			return true;
 		}
-
 		return false;
 	}
 
 public:
-	static inline bool is_dragging = false;
 	static BOOL func_wndProc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHandle* editp, FilterPlugin* fp)
 	{
 		constexpr auto do_seek = [](LPARAM lparam, WPARAM wparam, EditHandle* editp, FilterPlugin* fp) {
-			return Seek(static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16),
+			return (drag_state == 1 ? ObjSeek : BPMSeek)(
+				static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16),
 				(wparam & MK_CONTROL) != 0, (wparam & MK_SHIFT) != 0, editp, fp);
 		};
-		if (is_dragging) {
+		if (drag_state != 0) {
 			switch (message) {
 			case WM_MOUSEMOVE:
 				if (fp->exfunc->is_editing(editp) && !fp->exfunc->is_saving(editp))
@@ -612,64 +683,87 @@ public:
 			case WM_MBUTTONUP:
 			case WM_XBUTTONUP:
 				// any mouse button would stop this drag.
-				is_dragging = false;
+				drag_state = false;
 				::ReleaseCapture();
 				return FALSE;
 			case WM_CAPTURECHANGED:
 				// drag aborted, turn out of the dragging state.
-				is_dragging = false;
+				drag_state = false;
 				return FALSE;
 
-				// prevent the mouse cursor to change.
 			case WM_KEYDOWN:
 			case WM_SYSKEYDOWN:
 				if (wparam == VK_ESCAPE) {
 					// ESC key should stop dragging too.
-					is_dragging = false;
+					drag_state = false;
 					::ReleaseCapture();
 					return FALSE;
 				}
 				[[fallthrough]];
 			case WM_KEYUP:
 			case WM_SYSKEYUP:
-				if (static constinit bool callback_guard = false;
-					!callback_guard) {
-					callback_guard = true;
-					::SendMessageW(fp->hwnd_parent, message, wparam, lparam);
-					callback_guard = true;
-				}
-				else break;
-				return FALSE;
+				// ignore these two keys, which prevents the mouse cursor from changing.
+				if (wparam == VK_CONTROL || wparam == VK_SHIFT) return FALSE;
+
+				// otherwise let it be handled normally.
+				break;
 			}
 		}
-		else if (message == mes_down && (wparam >> 16) == btn_var) {
-			// turn into the dragging state, overriding mouse behavior.
-			is_dragging = true;
-			::SetCapture(hwnd);
-			::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
-
-			return do_seek(lparam, wparam, editp, fp) ? TRUE : FALSE;
+		else{
+			if (message == obj_mes_down && ((wparam ^ obj_xor_flags) & obj_btn_flags) == 0) drag_state = 1;
+			else if (message == bpm_mes_down && ((wparam ^ bpm_xor_flags) & bpm_btn_flags) == 0) drag_state = 2;
+			if (drag_state != 0) {
+				// turn into the dragging state, overriding mouse behavior.
+				::SetCapture(hwnd);
+				::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
+				return do_seek(lparam, wparam, editp, fp) ? TRUE : FALSE;
+			}
 		}
 		return exedit.func_wndproc(hwnd, message, wparam, lparam, editp, fp);
 	}
 	static void force_cancel() {
-		if (!is_dragging) return;
-		is_dragging = false;
+		if (drag_state == 0) return;
+		drag_state = false;
 		::ReleaseCapture();
 	}
 
 	static void init()
 	{
-		switch (settings.click_button) {
-			using enum Settings::DragButton;
-		case wheel:	mes_down = WM_MBUTTONDOWN; btn_var = 0;			break;
-		case x1:	mes_down = WM_XBUTTONDOWN; btn_var = XBUTTON1;	break;
-		case x2:	mes_down = WM_XBUTTONDOWN; btn_var = XBUTTON2;	break;
-		case none: default: return;
-		}
+		// pre-calculate the fast check condition to initiate drag operations.
+		constexpr auto mes_flags = [](Settings::DragButton button, Settings::ModKey key) -> std::tuple<UINT, uint32_t, uint32_t> {
+			uint32_t required = 0, rejected = 0;
+			switch (key) {
+				using enum Settings::ModKey;
+			case off:		return { 0, ~0, ~0 };
+			case ctrl:		required = MK_CONTROL;	break;
+			case inv_ctrl:	rejected = MK_CONTROL;	break;
+			case shift:		required = MK_SHIFT;	break;
+			case inv_shift:	rejected = MK_SHIFT;	break;
+			case on: default: break;
+			}
+			rejected |= ~(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON | MK_XBUTTON1 | MK_XBUTTON2 | MK_CONTROL | MK_SHIFT);
+			switch (button) {
+				using enum Settings::DragButton;
+			case right_shift:
+						return { WM_RBUTTONDOWN, rejected, required | MK_RBUTTON | MK_SHIFT };
+			case wheel:	return { WM_MBUTTONDOWN, rejected, required | MK_MBUTTON };
+			case x1:	return { WM_XBUTTONDOWN, rejected, required | MK_XBUTTON1 | (XBUTTON1 << 16) };
+			case x2:	return { WM_XBUTTONDOWN, rejected, required | MK_XBUTTON2 | (XBUTTON2 << 16) };
+			case none: default: return { 0, ~0, ~0 };
+			}
+		};
 
-		// as this feature is enabled, replace the callback function.
-		exedit.fp->func_WndProc = func_wndProc_detour;
+		auto [m, rj, rq] = mes_flags(settings.mouse.obj_button, settings.mouse.obj_condition);
+		if ((rj & rq) != 0) obj_mes_down = WM_NULL;
+		else obj_mes_down = m, obj_btn_flags = rj | rq, obj_xor_flags = rq;
+
+		std::tie(m, rj, rq) = mes_flags(settings.mouse.bpm_button, settings.mouse.bpm_condition);
+		if ((rj & rq) != 0) bpm_mes_down = WM_NULL;
+		else bpm_mes_down = m, bpm_btn_flags = rj | rq, bpm_xor_flags = rq;
+
+		if (obj_mes_down != WM_NULL || bpm_mes_down != WM_NULL)
+			// as this feature is enabled, replace the callback function.
+			exedit.fp->func_WndProc = func_wndProc_detour;
 	}
 };
 
@@ -795,7 +889,7 @@ inline bool menu_scroll_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp
 	case Menu::ScrollRight: dir = 1; goto scroll_LR;
 	scroll_LR:
 		if (int coeff = *exedit.curr_timeline_scale_len; coeff > 0) {
-			dir *= settings.scroll_amount / coeff;
+			dir *= settings.scroll.scroll_amount / coeff;
 			tl_scroll_h.set_pos(tl_scroll_h.get_pos() + dir, editp);
 		}
 		break;
@@ -826,14 +920,14 @@ inline bool menu_scroll_handler(Menu::ID id, EditHandle* editp, FilterPlugin* fp
 		moveto = std::clamp(moveto, 0, fp->exfunc->get_frame_n(editp) - page_size + margin);
 		if (moveto != curr_scr_pos)
 			tl_scroll_h.set_pos(moveto, editp);
-	}
 		break;
+	}
 
 		// vertical (layerwise) scroll.
 	case Menu::ScrollUp: dir = -1; goto scroll_UD;
 	case Menu::ScrollDown: dir = 1; goto scroll_UD;
 	scroll_UD:
-		dir *= settings.layer_count;
+		dir *= settings.scroll.layer_count;
 		tl_scroll_v.set_pos(tl_scroll_v.get_pos() + dir, editp);
 		break;
 	}
@@ -859,7 +953,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		// 選択中のオブジェクトのあるレイヤー内の左の編集点へ移動．
 		if (int sel_idx = *exedit.SettingDialogObjectIndex; sel_idx >= 0) {
 			moveto = Timeline::find_adjacent_left(pos, (*exedit.ObjectArray_ptr)[sel_idx].layer_set,
-				skip_midpoints, settings.skip_inactive_objects);
+				skip_midpoints, settings.skips.skip_inactive_objects);
 		}
 		else goto step_left_all;
 		break;
@@ -872,9 +966,9 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		moveto = 0;
 		auto scene_layer_settings = exedit.LayerSettings + num_layers * (*exedit.current_scene);
 		for (int j = 0; j < num_layers; j++) {
-			if (settings.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
+			if (settings.skips.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
 			moveto = std::max(moveto,
-				Timeline::find_adjacent_left(pos, j, skip_midpoints, settings.skip_inactive_objects));
+				Timeline::find_adjacent_left(pos, j, skip_midpoints, settings.skips.skip_inactive_objects));
 		}
 		break;
 	}
@@ -885,7 +979,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	step_right:
 		if (int sel_idx = *exedit.SettingDialogObjectIndex; sel_idx >= 0) {
 			moveto = Timeline::find_adjacent_right(pos, (*exedit.ObjectArray_ptr)[sel_idx].layer_set,
-				skip_midpoints, settings.skip_inactive_objects, len);
+				skip_midpoints, settings.skips.skip_inactive_objects, len);
 		}
 		else goto step_right_all;
 		break;
@@ -897,9 +991,9 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		moveto = len - 1;
 		auto scene_layer_settings = exedit.LayerSettings + num_layers * (*exedit.current_scene);
 		for (int j = 0; j < num_layers; j++) {
-			if (settings.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
+			if (settings.skips.skip_hidden_layers && Timeline::is_hidden(scene_layer_settings[j])) continue;
 			moveto = std::min(moveto,
-				Timeline::find_adjacent_right(pos, j, skip_midpoints, settings.skip_inactive_objects, len));
+				Timeline::find_adjacent_right(pos, j, skip_midpoints, settings.skips.skip_inactive_objects, len));
 		}
 		break;
 	}
@@ -927,7 +1021,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	case Menu::StepLenRight: dir = 1; goto step_len_LR;
 	step_len_LR:
 		if (int coeff = *exedit.curr_timeline_scale_len; coeff > 0) {
-			dir *= settings.seek_amount / coeff;
+			dir *= settings.scroll.seek_amount / coeff;
 			moveto = std::clamp(pos + dir, 0, len - 1);
 		}
 		break;
@@ -969,7 +1063,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	case Menu::StepNthBPMLeft: dir = -1; goto step_BPM_nth_LR;
 	case Menu::StepNthBPMRight: dir = 1; goto step_BPM_nth_LR;
 	step_BPM_nth_LR:
-		step_n = 1; step_d = settings.nth_beat;
+		step_n = 1; step_d = settings.bpm_grid.nth_beat;
 		goto step_BPM;
 
 	step_BPM:
@@ -1004,7 +1098,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	if (pos == moveto) return false;
 
 	// disable SHIFT key
-	ForceKeyState shift(settings.suppress_shift ?
+	ForceKeyState shift(settings.keyboard.suppress_shift ?
 		VK_SHIFT : ForceKeyState::vkey_invalid, false);
 	if (pos == fp->exfunc->set_frame(editp, moveto)) return false; // 実質移動なし．
 
@@ -1111,7 +1205,7 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHan
 	using Message = FilterPlugin::WindowMessage;
 	switch (message) {
 	case Message::Exit:
-		// ドラッグ操作中なら解除．関数の差し戻しは不必要．
+		// ドラッグ操作中なら解除．関数の差し戻しはしないほうが無難．
 		Drag::force_cancel();
 
 		// message-only window を削除．必要ないかもしれないけど．
