@@ -247,14 +247,14 @@ struct Timeline {
 
 	// 座標変換．
 private:
-	// タイムラインの最上段レイヤーの左上座標．
-	constexpr static int x_leftmost = 64, y_topmost = 42;
 	// タイムラインズームサイズの分母．
 	constexpr static int scale_denom = 10'000;
 public:
+	// タイムラインの最上段レイヤーの左上座標．
+	constexpr static int x_leftmost_client = 64, y_topmost_client = 42;
 	static inline int PointToFrame(int x)
 	{
-		x -= x_leftmost;
+		x -= x_leftmost_client;
 		x *= scale_denom; x /= *exedit.curr_timeline_scale_len;
 		x += *exedit.timeline_h_scroll_pos;
 		if (x < 0) x = 0;
@@ -270,14 +270,14 @@ public:
 			F *= *exedit.curr_timeline_scale_len; F /= scale_denom;
 			f = static_cast<int32_t>(F);
 		}
-		f += x_leftmost;
+		f += x_leftmost_client;
 
 		return f;
 	}
 	// シーンによらず最上段レイヤーは 0 扱い．
 	static int PointToLayer(int y)
 	{
-		y -= y_topmost;
+		y -= y_topmost_client;
 		y /= *exedit.curr_timeline_layer_height;
 		y += *exedit.timeline_v_scroll_pos;
 		y = std::clamp(y, 0, 99);
@@ -575,11 +575,11 @@ inline void load_settings(HMODULE h_dll)
 class Drag {
 	// WM_*BUTTONDOWN.
 	static inline constinit UINT obj_mes_down = WM_NULL, bpm_mes_down = WM_NULL;
-	// all flags in wparam to be checked.
-	static inline constinit uint32_t obj_btn_flags = ~0, bpm_btn_flags = ~0;
-	// flags in wparam that should be one.
-	static inline constinit uint32_t obj_xor_flags = ~0, bpm_xor_flags = ~0;
-	static inline int8_t drag_state = 0; // 0: normal, 1: obj-wise drag, 2: bpm-wise drag.
+	// flags in wparam that are either required or rejected.
+	static inline constinit uint32_t obj_msk_flags = ~0, bpm_msk_flags = ~0;
+	// flags in wparam required to be one.
+	static inline constinit uint32_t obj_req_flags = ~0, bpm_req_flags = ~0;
+	static inline uint_fast8_t drag_state = 0; // 0: normal, 1: obj-wise drag, 2: bpm-wise drag.
 
 	constexpr static bool key2flag(Settings::ModKey k, bool key_ctrl, bool key_shift) {
 		switch (k) {
@@ -593,7 +593,7 @@ class Drag {
 		}
 	}
 	static bool ObjSeek(int mouse_x, int mouse_y, bool ctrl, bool shift,
-		AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
+		EditHandle* editp, FilterPlugin* fp)
 	{
 		const auto pos = fp->exfunc->get_frame(editp);
 		const auto len = fp->exfunc->get_frame_n(editp);
@@ -602,6 +602,7 @@ class Drag {
 		constexpr int num_layers = 100;
 		auto mouse_frame = Timeline::PointToFrame(mouse_x);
 		auto mouse_layer = Timeline::PointToLayer(mouse_y);
+		scroll_vertically_on_drag(mouse_layer, editp);
 		mouse_layer += num_layers * (*exedit.current_scene);
 
 		// calculate the smallest interval containing `mouse_frame`.
@@ -611,10 +612,37 @@ class Drag {
 		if (r < 0) r = len - 1;
 
 		// then seek to either left or right if it's near enough to the mouse.
-		return SeelLeftRight(l, r, mouse_frame, pos, len, mouse_x, fp, editp);
+		return SeekLeftRight(l, r, mouse_frame, pos, len, mouse_x, editp, fp);
+	}
+	// scrolls the timeline vertically when dragging over the visible area.
+	// there are at least 100 ms intervals between scrolls.
+	static void scroll_vertically_on_drag(int mouse_layer, EditHandle* editp) {
+		constexpr uint32_t interval_min = 100;
+
+		constexpr auto check_tick = [] {
+		#pragma warning(suppress : 28159) // 32 bit is enough.
+			uint32_t curr = ::GetTickCount();
+
+			static constinit uint32_t prev = 0;
+			if (curr - prev >= interval_min) {
+				prev = curr;
+				return true;
+			}
+			return false;
+		};
+
+		int dir = 0;
+		if (auto rel_pos = mouse_layer - *exedit.timeline_v_scroll_pos;
+			rel_pos < 0) dir = -1;
+		else if (rel_pos >= *exedit.timeline_height_in_layers) dir = +1;
+		else return;
+		if (!check_tick()) return;
+
+		// then scroll.
+		tl_scroll_v.set_pos(tl_scroll_v.get_pos() + dir, editp);
 	}
 	static bool BPMSeek(int mouse_x, int mouse_y, bool ctrl, bool shift,
-		AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
+		EditHandle* editp, FilterPlugin* fp)
 	{
 		const auto pos = fp->exfunc->get_frame(editp);
 		const auto len = fp->exfunc->get_frame_n(editp);
@@ -639,11 +667,11 @@ class Drag {
 		auto beat = grid.beat_from_pos(mouse_frame);
 
 		// seek to either `beat` or `beat + 1`.
-		return SeelLeftRight(grid.pos_from_beat(beat), grid.pos_from_beat(beat + 1),
-			mouse_frame, pos, len, mouse_x, fp, editp);
+		return SeekLeftRight(grid.pos_from_beat(beat), grid.pos_from_beat(beat + 1),
+			mouse_frame, pos, len, mouse_x, editp, fp);
 	}
-	static bool SeelLeftRight(int l, int r, int mouse_frame, int32_t pos, int32_t len, int mouse_x,
-		AviUtl::FilterPlugin* fp, AviUtl::EditHandle* editp)
+	static bool SeekLeftRight(int l, int r, int mouse_frame, int32_t pos, int32_t len, int mouse_x,
+		EditHandle* editp, FilterPlugin* fp)
 	{
 		int moveto = 2 * mouse_frame < l + r ? l : r;
 		moveto = std::clamp(moveto, 0, len - 1);
@@ -658,22 +686,28 @@ class Drag {
 		}
 		return false;
 	}
+	static void exit_drag() {
+		drag_state = 0;
+		if (::GetCapture() == exedit.fp->hwnd)
+			::ReleaseCapture();
+	}
 
-public:
-	static BOOL func_wndProc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHandle* editp, FilterPlugin* fp)
+	static BOOL func_wndproc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHandle* editp, FilterPlugin* fp)
 	{
-		constexpr auto do_seek = [](LPARAM lparam, WPARAM wparam, EditHandle* editp, FilterPlugin* fp) {
+		auto do_seek = [&](int mouse_x, int mouse_y) {
 			return (drag_state == 1 ? ObjSeek : BPMSeek)(
-				static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16),
-				(wparam & MK_CONTROL) != 0, (wparam & MK_SHIFT) != 0, editp, fp);
+				mouse_x, mouse_y, (wparam & MK_CONTROL) != 0, (wparam & MK_SHIFT) != 0, editp, fp);
 		};
 		if (drag_state != 0) {
+			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) {
+				exit_drag();
+				goto default_handler;
+			}
+
 			switch (message) {
 			case WM_MOUSEMOVE:
-				if (fp->exfunc->is_editing(editp) && !fp->exfunc->is_saving(editp))
-					return do_seek(lparam, wparam, editp, fp) ? TRUE : FALSE;
+				return do_seek(static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16)) ? TRUE : FALSE;
 
-				[[fallthrough]];
 			case WM_LBUTTONDOWN:
 			case WM_RBUTTONDOWN:
 			case WM_MBUTTONDOWN:
@@ -683,20 +717,15 @@ public:
 			case WM_MBUTTONUP:
 			case WM_XBUTTONUP:
 				// any mouse button would stop this drag.
-				drag_state = false;
-				::ReleaseCapture();
-				return FALSE;
-			case WM_CAPTURECHANGED:
-				// drag aborted, turn out of the dragging state.
-				drag_state = false;
+			case WM_CAPTURECHANGED: // drag aborted.
+				exit_drag();
 				return FALSE;
 
 			case WM_KEYDOWN:
 			case WM_SYSKEYDOWN:
 				if (wparam == VK_ESCAPE) {
 					// ESC key should stop dragging too.
-					drag_state = false;
-					::ReleaseCapture();
+					exit_drag();
 					return FALSE;
 				}
 				[[fallthrough]];
@@ -705,65 +734,95 @@ public:
 				// ignore these two keys, which prevents the mouse cursor from changing.
 				if (wparam == VK_CONTROL || wparam == VK_SHIFT) return FALSE;
 
+				[[fallthrough]];
+			default:
 				// otherwise let it be handled normally.
-				break;
+				goto default_handler;
 			}
 		}
-		else{
-			if (message == obj_mes_down && ((wparam ^ obj_xor_flags) & obj_btn_flags) == 0) drag_state = 1;
-			else if (message == bpm_mes_down && ((wparam ^ bpm_xor_flags) & bpm_btn_flags) == 0) drag_state = 2;
-			if (drag_state != 0) {
-				// turn into the dragging state, overriding mouse behavior.
-				::SetCapture(hwnd);
-				::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
-				return do_seek(lparam, wparam, editp, fp) ? TRUE : FALSE;
-			}
+		else {
+			decltype(drag_state) state_cand;
+
+			// check for the message condition to initiate drag operation.
+			if (message == obj_mes_down && (wparam & obj_msk_flags) == obj_req_flags) state_cand = 1;
+			else if (message == bpm_mes_down && (wparam & bpm_msk_flags) == bpm_req_flags) state_cand = 2;
+			else goto default_handler;
+
+			// WM_NULL can pass the above check, which is eliminated here.
+			if (message == WM_NULL) goto default_handler;
+
+			// additionally check for the current state of AviUtl.
+			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp) ||
+				::GetCapture() != nullptr) goto default_handler;
+
+			// one more thing that user must be clicking inside the timeline region.
+			int mouse_x = static_cast<int16_t>(lparam),
+				mouse_y = static_cast<int16_t>(lparam >> 16);
+			if (Timeline::x_leftmost_client > mouse_x || Timeline::y_topmost_client > mouse_y)
+				goto default_handler;
+
+			// turn into the dragging state, overriding mouse behavior.
+			drag_state = state_cand;
+			::SetCapture(hwnd);
+			::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
+			return do_seek(mouse_x, mouse_y) ? TRUE : FALSE;
 		}
+
+	default_handler:
 		return exedit.func_wndproc(hwnd, message, wparam, lparam, editp, fp);
 	}
-	static void force_cancel() {
-		if (drag_state == 0) return;
-		drag_state = false;
-		::ReleaseCapture();
-	}
 
+public:
 	static void init()
 	{
 		// pre-calculate the fast check condition to initiate drag operations.
 		constexpr auto mes_flags = [](Settings::DragButton button, Settings::ModKey key) -> std::tuple<UINT, uint32_t, uint32_t> {
-			uint32_t required = 0, rejected = 0;
+			constexpr auto disabled = std::make_tuple(WM_NULL, ~0, ~0);
+
+			// flags for modifier keys.
+			uint32_t req = 0, rej = 0;
 			switch (key) {
 				using enum Settings::ModKey;
-			case off:		return { 0, ~0, ~0 };
-			case ctrl:		required = MK_CONTROL;	break;
-			case inv_ctrl:	rejected = MK_CONTROL;	break;
-			case shift:		required = MK_SHIFT;	break;
-			case inv_shift:	rejected = MK_SHIFT;	break;
+			case off:		return disabled;
+			case ctrl:		req = MK_CONTROL;	break;
+			case inv_ctrl:	rej = MK_CONTROL;	break;
+			case shift:		req = MK_SHIFT;	break;
+			case inv_shift:	rej = MK_SHIFT;	break;
 			case on: default: break;
 			}
-			rejected |= ~(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON | MK_XBUTTON1 | MK_XBUTTON2 | MK_CONTROL | MK_SHIFT);
+
+			// flags for mouse buttons (and perhaps shift).
+			UINT mes; uint32_t btn;
 			switch (button) {
 				using enum Settings::DragButton;
 			case right_shift:
-						return { WM_RBUTTONDOWN, rejected, required | MK_RBUTTON | MK_SHIFT };
-			case wheel:	return { WM_MBUTTONDOWN, rejected, required | MK_MBUTTON };
-			case x1:	return { WM_XBUTTONDOWN, rejected, required | MK_XBUTTON1 | (XBUTTON1 << 16) };
-			case x2:	return { WM_XBUTTONDOWN, rejected, required | MK_XBUTTON2 | (XBUTTON2 << 16) };
-			case none: default: return { 0, ~0, ~0 };
+						mes = WM_RBUTTONDOWN; btn = MK_RBUTTON | MK_SHIFT;			break;
+			case wheel:	mes = WM_MBUTTONDOWN; btn = MK_MBUTTON;						break;
+			case x1:	mes = WM_XBUTTONDOWN; btn = MK_XBUTTON1 | (XBUTTON1 << 16);	break;
+			case x2:	mes = WM_XBUTTONDOWN; btn = MK_XBUTTON2 | (XBUTTON2 << 16);	break;
+			case none: default: return disabled;
 			}
+
+			// combine.
+			req |= btn;
+			rej |= ~(MK_CONTROL | MK_SHIFT | btn);
+
+			// check overlaps.
+			if ((req & rej) != 0) return disabled;
+			return { mes, req | rej, req};
 		};
 
-		auto [m, rj, rq] = mes_flags(settings.mouse.obj_button, settings.mouse.obj_condition);
-		if ((rj & rq) != 0) obj_mes_down = WM_NULL;
-		else obj_mes_down = m, obj_btn_flags = rj | rq, obj_xor_flags = rq;
-
-		std::tie(m, rj, rq) = mes_flags(settings.mouse.bpm_button, settings.mouse.bpm_condition);
-		if ((rj & rq) != 0) bpm_mes_down = WM_NULL;
-		else bpm_mes_down = m, bpm_btn_flags = rj | rq, bpm_xor_flags = rq;
+		std::tie(obj_mes_down, obj_msk_flags, obj_req_flags) = mes_flags(settings.mouse.obj_button, settings.mouse.obj_condition);
+		std::tie(bpm_mes_down, bpm_msk_flags, bpm_req_flags) = mes_flags(settings.mouse.bpm_button, settings.mouse.bpm_condition);
 
 		if (obj_mes_down != WM_NULL || bpm_mes_down != WM_NULL)
 			// as this feature is enabled, replace the callback function.
-			exedit.fp->func_WndProc = func_wndProc_detour;
+			exedit.fp->func_WndProc = func_wndproc_detour;
+	}
+
+	static void force_cancel() {
+		if (drag_state == 0) return;
+		exit_drag();
 	}
 };
 
