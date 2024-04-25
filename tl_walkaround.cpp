@@ -576,7 +576,7 @@ class Drag {
 	// WM_*BUTTONDOWN.
 	static inline constinit UINT obj_mes_down = WM_NULL, bpm_mes_down = WM_NULL;
 	// flags in wparam that are either required or rejected.
-	static inline constinit uint32_t obj_msk_flags = ~0, bpm_msk_flags = ~0;
+	static inline constinit uint32_t obj_msk_flags = 0, bpm_msk_flags = 0;
 	// flags in wparam required to be one.
 	static inline constinit uint32_t obj_req_flags = ~0, bpm_req_flags = ~0;
 	static inline uint_fast8_t drag_state = 0; // 0: normal, 1: obj-wise drag, 2: bpm-wise drag.
@@ -748,9 +748,6 @@ class Drag {
 			else if (message == bpm_mes_down && (wparam & bpm_msk_flags) == bpm_req_flags) state_cand = 2;
 			else goto default_handler;
 
-			// WM_NULL can pass the above check, which is eliminated here.
-			if (message == WM_NULL) goto default_handler;
-
 			// additionally check for the current state of AviUtl.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp) ||
 				::GetCapture() != nullptr) goto default_handler;
@@ -777,7 +774,7 @@ public:
 	{
 		// pre-calculate the fast check condition to initiate drag operations.
 		constexpr auto mes_flags = [](Settings::DragButton button, Settings::ModKey key) -> std::tuple<UINT, uint32_t, uint32_t> {
-			constexpr auto disabled = std::make_tuple(WM_NULL, ~0, ~0);
+			constexpr auto disabled = std::make_tuple(WM_NULL, 0, ~0);
 
 			// flags for modifier keys.
 			uint32_t req = 0, rej = 0;
@@ -786,8 +783,8 @@ public:
 			case off:		return disabled;
 			case ctrl:		req = MK_CONTROL;	break;
 			case inv_ctrl:	rej = MK_CONTROL;	break;
-			case shift:		req = MK_SHIFT;	break;
-			case inv_shift:	rej = MK_SHIFT;	break;
+			case shift:		req = MK_SHIFT;		break;
+			case inv_shift:	rej = MK_SHIFT;		break;
 			case on: default: break;
 			}
 
