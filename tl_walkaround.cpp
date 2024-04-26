@@ -247,6 +247,13 @@ struct Timeline {
 
 	// 座標変換．
 private:
+	// division that rounds toward negative infinity.
+	// `divisor` is assumed to be positive.
+	static constexpr auto floor_div(auto divident, auto const divisor) {
+		if (divident < 0) divident -= divisor - 1;
+		return divident / divisor;
+	}
+
 	// タイムラインズームサイズの分母．
 	constexpr static int scale_denom = 10'000;
 public:
@@ -255,7 +262,8 @@ public:
 	static inline int PointToFrame(int x)
 	{
 		x -= x_leftmost_client;
-		x *= scale_denom; x /= *exedit.curr_timeline_scale_len;
+		x *= scale_denom;
+		x = floor_div(x, *exedit.curr_timeline_scale_len);
 		x += *exedit.timeline_h_scroll_pos;
 		if (x < 0) x = 0;
 
@@ -267,7 +275,8 @@ public:
 		{
 			// possibly overflow; curr_timeline_scale_len is at most 100'000 (> 2^16).
 			int64_t F = f;
-			F *= *exedit.curr_timeline_scale_len; F /= scale_denom;
+			F *= *exedit.curr_timeline_scale_len;
+			F = floor_div(F, scale_denom);
 			f = static_cast<int32_t>(F);
 		}
 		f += x_leftmost_client;
@@ -278,7 +287,7 @@ public:
 	static int PointToLayer(int y)
 	{
 		y -= y_topmost_client;
-		y /= *exedit.curr_timeline_layer_height;
+		y = floor_div(y, *exedit.curr_timeline_layer_height);
 		y += *exedit.timeline_v_scroll_pos;
 		y = std::clamp(y, 0, 99);
 
@@ -479,6 +488,7 @@ inline constinit struct Settings {
 
 		uint8_t snap_range = 20;
 		constexpr static uint8_t snap_range_min = 2, snap_range_max = 128;
+		bool suppress_shift = true;
 	} mouse;
 
 	void load(const char* ini_file)
@@ -540,6 +550,7 @@ inline constinit struct Settings {
 		load_mkey	(bpm_stop_nth_beat,		mouse);
 
 		load_int	(snap_range,			mouse);
+		load_bool	(suppress_shift,		mouse);
 
 	#undef load_bool
 	#undef load_ratio
@@ -600,23 +611,31 @@ class Drag {
 
 		// calculate the frame number and layer at the mouse position.
 		constexpr int num_layers = 100;
-		auto mouse_frame = Timeline::PointToFrame(mouse_x);
-		auto mouse_layer = Timeline::PointToLayer(mouse_y);
-		scroll_vertically_on_drag(mouse_layer, editp);
-		mouse_layer += num_layers * (*exedit.current_scene);
+		auto frame_mouse = Timeline::PointToFrame(mouse_x);
+		auto layer_mouse = Timeline::PointToLayer(mouse_y);
 
-		// calculate the smallest interval containing `mouse_frame`.
-		auto [l, r] = Timeline::find_interval(mouse_frame, mouse_layer,
+		// scroll if the mouse is outside the window.
+		scroll_vertically_on_drag(layer_mouse, editp);
+
+		// limit the target layer to a visible one.
+		{
+			auto layer_top = tl_scroll_v.get_pos();
+			layer_mouse = std::clamp(layer_mouse, layer_top, layer_top + tl_scroll_v.get_page_size() - 1);
+		}
+
+		// calculate the smallest interval containing `frame_mouse`.
+		auto [l, r] = Timeline::find_interval(frame_mouse,
+			layer_mouse + num_layers * (*exedit.current_scene),
 			key2flag(settings.mouse.obj_skip_midpoints, ctrl, shift),
 			key2flag(settings.mouse.obj_skip_inactives, ctrl, shift));
 		if (r < 0) r = len - 1;
 
 		// then seek to either left or right if it's near enough to the mouse.
-		return SeekLeftRight(l, r, mouse_frame, pos, len, mouse_x, editp, fp);
+		return SeekLeftRight(l, r, mouse_x, pos, len, editp, fp);
 	}
 	// scrolls the timeline vertically when dragging over the visible area.
 	// there are at least 100 ms intervals between scrolls.
-	static void scroll_vertically_on_drag(int mouse_layer, EditHandle* editp) {
+	static void scroll_vertically_on_drag(int layer_mouse, EditHandle* editp) {
 		constexpr uint32_t interval_min = 100;
 
 		constexpr auto check_tick = [] {
@@ -632,9 +651,9 @@ class Drag {
 		};
 
 		int dir = 0;
-		if (auto rel_pos = mouse_layer - *exedit.timeline_v_scroll_pos;
+		if (auto rel_pos = layer_mouse - tl_scroll_v.get_pos();
 			rel_pos < 0) dir = -1;
-		else if (rel_pos >= *exedit.timeline_height_in_layers) dir = +1;
+		else if (rel_pos >= tl_scroll_v.get_page_size()) dir = +1;
 		else return;
 		if (!check_tick()) return;
 
@@ -647,7 +666,7 @@ class Drag {
 		const auto pos = fp->exfunc->get_frame(editp);
 		const auto len = fp->exfunc->get_frame_n(editp);
 
-		auto mouse_frame = Timeline::PointToFrame(mouse_x);
+		auto frame_mouse = Timeline::PointToFrame(mouse_x);
 
 		// find which `strength` of beat to stop.
 		// priority: nth > 4th > one beat > per measure.
@@ -664,27 +683,33 @@ class Drag {
 		BPM_Grid grid{ numer, denom, editp };
 
 		// calculate the nearest left beat.
-		auto beat = grid.beat_from_pos(mouse_frame);
+		auto beat = grid.beat_from_pos(frame_mouse);
 
 		// seek to either `beat` or `beat + 1`.
 		return SeekLeftRight(grid.pos_from_beat(beat), grid.pos_from_beat(beat + 1),
-			mouse_frame, pos, len, mouse_x, editp, fp);
+			mouse_x, pos, len, editp, fp);
 	}
-	static bool SeekLeftRight(int l, int r, int mouse_frame, int32_t pos, int32_t len, int mouse_x,
+	static bool SeekLeftRight(int l, int r, int mouse_x, int pos, int len,
 		EditHandle* editp, FilterPlugin* fp)
 	{
-		int moveto = 2 * mouse_frame < l + r ? l : r;
-		moveto = std::clamp(moveto, 0, len - 1);
-		if (moveto != pos &&
-			(settings.mouse.snap_range >= settings.mouse.snap_range_max ||
-				std::abs(Timeline::FrameToPoint(moveto) - mouse_x) < settings.mouse.snap_range)) {
+		l = std::clamp(l, 0, len - 1); r = std::clamp(r, 0, len - 1);
 
-			ForceKeyState shift(settings.keyboard.suppress_shift ?
-				VK_SHIFT : ForceKeyState::vkey_invalid, false);
-			fp->exfunc->set_frame(editp, moveto);
-			return true;
-		}
-		return false;
+		// choose the nearer frame in the screen coordinate.
+		int moveto, moveto_x;
+		auto l_x = Timeline::FrameToPoint(l), r_x = Timeline::FrameToPoint(r);
+		if (2 * mouse_x <= l_x + r_x) moveto = l, moveto_x = l_x;
+		else moveto = r, moveto_x = r_x;
+
+		if (moveto == pos) return false; // didn't move.
+		// if too far from mouse compared to the snap_range, do nothing.
+		if ((settings.mouse.snap_range < settings.mouse.snap_range_max &&
+			std::abs(moveto_x - mouse_x) > settings.mouse.snap_range)) return false;
+
+		// Then, move to the desired destination, forcing Shift key state if necessary.
+		ForceKeyState shift(settings.mouse.suppress_shift ?
+			VK_SHIFT : ForceKeyState::vkey_invalid, false);
+		fp->exfunc->set_frame(editp, moveto);
+		return true;
 	}
 	static void exit_drag() {
 		drag_state = 0;
@@ -692,7 +717,8 @@ class Drag {
 			::ReleaseCapture();
 	}
 
-	static BOOL func_wndproc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHandle* editp, FilterPlugin* fp)
+	static BOOL func_wndproc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam,
+		EditHandle* editp, FilterPlugin* fp)
 	{
 		auto do_seek = [&](int mouse_x, int mouse_y) {
 			return (drag_state == 1 ? ObjSeek : BPMSeek)(
@@ -814,7 +840,7 @@ public:
 
 		if (obj_mes_down != WM_NULL || bpm_mes_down != WM_NULL)
 			// as this feature is enabled, replace the callback function.
-			exedit.fp->func_WndProc = func_wndproc_detour;
+			exedit.fp->func_WndProc = &func_wndproc_detour;
 	}
 
 	static void force_cancel() {
@@ -1256,7 +1282,7 @@ BOOL func_init(FilterPlugin* fp)
 	return TRUE;
 }
 
-BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHandle* editp, FilterPlugin* fp)
+BOOL func_wndproc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, EditHandle* editp, FilterPlugin* fp)
 {
 	using Message = FilterPlugin::WindowMessage;
 	switch (message) {
@@ -1305,7 +1331,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.20-beta3"
+#define PLUGIN_VERSION	"v1.20-pre1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
@@ -1319,7 +1345,7 @@ extern "C" __declspec(dllexport) FilterPluginDLL* __stdcall GetFilterTable(void)
 		.name = PLUGIN_NAME,
 
 		.func_init = func_init,
-		.func_WndProc = func_WndProc,
+		.func_WndProc = func_wndproc,
 		.information = PLUGIN_INFO,
 	};
 	return &filter;
