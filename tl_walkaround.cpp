@@ -482,7 +482,7 @@ inline constinit struct Settings {
 
 		DragButton bpm_button = DragButton::none;
 		ModKey bpm_condition = ModKey::on,
-			bpm_stop_beat = ModKey::on,
+			bpm_stop_beat = ModKey::inv_ctrl,
 			bpm_stop_4th_beat = ModKey::shift,
 			bpm_stop_nth_beat = ModKey::off;
 
@@ -1331,7 +1331,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.20-pre1"
+#define PLUGIN_VERSION	"v1.20-pre2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
