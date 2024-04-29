@@ -624,8 +624,7 @@ class Drag {
 		}
 
 		// calculate the smallest interval containing `frame_mouse`.
-		auto [l, r] = Timeline::find_interval(frame_mouse,
-			layer_mouse + num_layers * (*exedit.current_scene),
+		auto [l, r] = Timeline::find_interval(frame_mouse, layer_mouse,
 			key2flag(settings.mouse.obj_skip_midpoints, ctrl, shift),
 			key2flag(settings.mouse.obj_skip_inactives, ctrl, shift));
 		if (r < 0) r = len - 1;
