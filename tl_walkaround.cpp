@@ -105,7 +105,7 @@ private:
 ////////////////////////////////
 // 探索関数コア部．
 ////////////////////////////////
-struct Timeline {
+class Timeline {
 	// returns the index of the right-most object whose beginning point is at `pos` or less,
 	// `idx_L-1` if couldn't find such.
 	static int find_nearest_index(int pos, int idx_L, int idx_R)
@@ -124,66 +124,7 @@ struct Timeline {
 		return idx_L;
 	}
 
-	static bool is_active_direct(const Object* obj) {
-		return has_flag(obj->filter_status[0], Object::FilterStatus::Active);
-	}
-	static bool is_active(const Object* obj) {
-		auto i = obj->index_midpt_leader;
-		return is_active_direct(i < 0 ? obj : &(*exedit.ObjectArray_ptr)[i]);
-	}
-	static bool is_hidden(const LayerSetting& setting) {
-		return has_flag(setting.flag, LayerSetting::Flag::UnDisp);
-	}
-	static int chain_begin(const Object* obj)
-	{
-		if (auto i = obj->index_midpt_leader; i >= 0) obj = &(*exedit.ObjectArray_ptr)[i];
-		return obj->frame_begin;
-	}
-	static int chain_end(const Object* obj)
-	{
-		if (auto i = obj->index_midpt_leader; i >= 0) {
-			int j;
-			while (j = exedit.NextObjectIdxArray[i], j >= 0) i = j;
-			obj = &(*exedit.ObjectArray_ptr)[i];
-		}
-		return obj->frame_end;
-	}
-
-#define to_skip(obj)		(skip_inactives && !is_active(obj))
-#define chain_begin(obj)	(skip_midpoints ? chain_begin(obj) : (obj)->frame_begin)
-#define chain_end(obj)		(skip_midpoints ? chain_end(obj) : (obj)->frame_end)
-	// idx 以下のオブジェクトの境界や中間点で，条件に当てはまる pos 以下の点を線形に検索．
-	static int find_adjacent_left_core(int idx, int idx_L, int pos, bool skip_midpoints, bool skip_inactives)
-	{
-		if (auto obj = exedit.SortedObject[idx]; !to_skip(obj))
-			return pos < obj->frame_end + 1 ? chain_begin(obj) : chain_end(obj) + 1;
-
-		// 無効でない最も近いオブジェクトを探すのは線形探索しか方法がない．
-		while (idx_L <= --idx) {
-			// 初期 idx が無効オブジェクトでスキップされたという前提があるため，
-			// 最初に見つかった有効オブジェクトの終了点は中間点でなくオブジェクト境界になる．
-			// なので skip_midpoints の確認や obj_chain_end() 呼び出しは必要ない．
-			if (auto obj = exedit.SortedObject[idx]; is_active(obj))
-				return obj->frame_end + 1;
-		}
-		return 0;
-	}
-	// idx 以上のオブジェクトの境界や中間点で，条件に当てはまる pos 以上の点を線形に検索．
-	static int find_adjacent_right_core(int idx, int idx_R, int pos, bool skip_midpoints, bool skip_inactives)
-	{
-		// 上の関数の左右逆．
-		if (auto obj = exedit.SortedObject[idx]; !to_skip(obj))
-			return pos <= obj->frame_begin ? obj->frame_begin : chain_end(obj) + 1;
-
-		while (++idx <= idx_R) {
-			if (auto obj = exedit.SortedObject[idx]; is_active(obj))
-				return obj->frame_begin;
-		}
-		return -1;
-	}
-#undef to_skip
-#undef chain_begin
-#undef chain_end
+public:
 	static int find_adjacent_left(int pos, int layer, bool skip_midpoints, bool skip_inactives)
 	{
 		// 指定された位置より左にある最も近い境界を探す．
@@ -216,6 +157,12 @@ struct Timeline {
 		// そこを起点に線形探索してスキップ対象を除外．
 		return find_adjacent_right_core(idx, idx_R, pos + 1, skip_midpoints, skip_inactives);
 	}
+	// 「-1 で最右端」規格がめんどくさいのでラップ．
+	static int find_adjacent_right(int pos, int layer,
+		bool skip_midpoints, bool skip_inactives, int len) {
+		pos = find_adjacent_right(pos, layer, skip_midpoints, skip_inactives);
+		return 0 <= pos && pos < len ? pos : len - 1;
+	}
 
 	static std::tuple<int, int> find_interval(int pos, int layer, bool skip_midpoints, bool skip_inactives)
 	{
@@ -238,11 +185,65 @@ struct Timeline {
 
 		return { pos_l, pos_r };
 	}
-	// 「-1 で最右端」規格がめんどくさいのでラップ．
-	static int find_adjacent_right(int pos, int layer,
-		bool skip_midpoints, bool skip_inactives, int len) {
-		pos = find_adjacent_right(pos, layer, skip_midpoints, skip_inactives);
-		return 0 <= pos && pos < len ? pos : len - 1;
+
+private:
+#define ToSkip(obj)		(skip_inactives && !is_active(obj))
+#define ChainBegin(obj)	(skip_midpoints ? chain_begin(obj) : (obj)->frame_begin)
+#define ChainEnd(obj)	(skip_midpoints ? chain_end(obj) : (obj)->frame_end)
+	// idx 以下のオブジェクトの境界や中間点で，条件に当てはまる pos 以下の点を線形に検索．
+	static int find_adjacent_left_core(int idx, int idx_L, int pos, bool skip_midpoints, bool skip_inactives)
+	{
+		if (auto obj = exedit.SortedObject[idx]; !ToSkip(obj))
+			return pos < obj->frame_end + 1 ? ChainBegin(obj) : ChainEnd(obj) + 1;
+
+		// 無効でない最も近いオブジェクトを探すのは線形探索しか方法がない．
+		while (idx_L <= --idx) {
+			// 初期 idx が無効オブジェクトでスキップされたという前提があるため，
+			// 最初に見つかった有効オブジェクトの終了点は中間点でなくオブジェクト境界になる．
+			// なので skip_midpoints の確認や ChainEnd() 呼び出しは必要ない．
+			if (auto obj = exedit.SortedObject[idx]; is_active(obj))
+				return obj->frame_end + 1;
+		}
+		return 0;
+	}
+	// idx 以上のオブジェクトの境界や中間点で，条件に当てはまる pos 以上の点を線形に検索．
+	static int find_adjacent_right_core(int idx, int idx_R, int pos, bool skip_midpoints, bool skip_inactives)
+	{
+		// 上の関数の左右逆．
+		if (auto obj = exedit.SortedObject[idx]; !ToSkip(obj))
+			return pos <= obj->frame_begin ? obj->frame_begin : ChainEnd(obj) + 1;
+
+		while (++idx <= idx_R) {
+			if (auto obj = exedit.SortedObject[idx]; is_active(obj))
+				return obj->frame_begin;
+		}
+		return -1;
+	}
+#undef ToSkip
+#undef ChainBegin
+#undef ChainEnd
+
+public:
+	static bool is_active(const Object* obj) {
+		if (auto i = obj->index_midpt_leader; i >= 0) obj = &(*exedit.ObjectArray_ptr)[i];
+		return has_flag_or(obj->filter_status[0], Object::FilterStatus::Active);
+	}
+	static bool is_hidden(const LayerSetting& setting) {
+		return has_flag_or(setting.flag, LayerSetting::Flag::UnDisp);
+	}
+	static int chain_begin(const Object* obj)
+	{
+		if (auto i = obj->index_midpt_leader; i >= 0) obj = &(*exedit.ObjectArray_ptr)[i];
+		return obj->frame_begin;
+	}
+	static int chain_end(const Object* obj)
+	{
+		if (auto i = obj->index_midpt_leader; i >= 0) {
+			int j;
+			while (j = exedit.NextObjectIdxArray[i], j >= 0) i = j;
+			obj = &(*exedit.ObjectArray_ptr)[i];
+		}
+		return obj->frame_end;
 	}
 
 	// 座標変換．
@@ -610,7 +611,6 @@ class Drag {
 		const auto len = fp->exfunc->get_frame_n(editp);
 
 		// calculate the frame number and layer at the mouse position.
-		constexpr int num_layers = 100;
 		auto frame_mouse = Timeline::PointToFrame(mouse_x);
 		auto layer_mouse = Timeline::PointToLayer(mouse_y);
 
@@ -1079,20 +1079,20 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 		break;
 	}
 
-	#define chain_begin(obj)	(skip_midpoints ? Timeline::chain_begin(obj) : (obj)->frame_begin)
-	#define chain_end(obj)		(skip_midpoints ? Timeline::chain_end(obj) : (obj)->frame_end)
+	#define ChainBegin(obj)	(skip_midpoints ? Timeline::chain_begin(obj) : (obj)->frame_begin)
+	#define ChainEnd(obj)		(skip_midpoints ? Timeline::chain_end(obj) : (obj)->frame_end)
 		// 現在選択中のオブジェクト or 中間点区間まで現在フレームを移動．
 	case Menu::StepIntoSelObj: skip_midpoints = true; goto step_into_selected;
 	case Menu::StepIntoSelMidpt: skip_midpoints = false; goto step_into_selected;
 	step_into_selected:
 		if (auto sel_idx = *exedit.SettingDialogObjectIndex; sel_idx >= 0) {
 			const auto& sel_obj = (*exedit.ObjectArray_ptr)[sel_idx];
-			if (auto begin = chain_begin(&sel_obj); pos < begin) moveto = begin;
-			else if (auto end = chain_end(&sel_obj); end < pos) moveto = end;
+			if (auto begin = ChainBegin(&sel_obj); pos < begin) moveto = begin;
+			else if (auto end = ChainEnd(&sel_obj); end < pos) moveto = end;
 		}
 		break;
-	#undef chain_begin
-	#undef chain_end
+	#undef ChainBegin
+	#undef ChainEnd
 		}
 
 		{
@@ -1330,7 +1330,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.21"
+#define PLUGIN_VERSION	"v1.22-alpha1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
