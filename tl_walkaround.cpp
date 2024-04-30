@@ -800,6 +800,12 @@ class Drag {
 			else if (message == bpm_mes_down && (wparam & bpm_msk_flags) == bpm_req_flags) state_cand = 2;
 			else goto default_handler;
 
+			// one more thing that user must be clicking inside the timeline region.
+			int mouse_x = static_cast<int16_t>(lparam),
+				mouse_y = static_cast<int16_t>(lparam >> 16);
+			if (Timeline::x_leftmost_client > mouse_x || Timeline::y_topmost_client > mouse_y)
+				goto default_handler;
+
 			// exedit must not be in a dragging state other than for moving the current frame.
 			auto drag_kind = *exedit.timeline_drag_kind;
 			if (!(drag_kind == 0 || drag_kind == 4)) goto default_handler;
@@ -807,12 +813,6 @@ class Drag {
 			// additionally check for the current state of AviUtl.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp) ||
 				::GetCapture() != (drag_kind == 0 ? nullptr : hwnd)) goto default_handler;
-
-			// one more thing that user must be clicking inside the timeline region.
-			int mouse_x = static_cast<int16_t>(lparam),
-				mouse_y = static_cast<int16_t>(lparam >> 16);
-			if (Timeline::x_leftmost_client > mouse_x || Timeline::y_topmost_client > mouse_y)
-				goto default_handler;
 
 			// turn into the dragging state, overriding mouse behavior.
 			drag_state = state_cand;
