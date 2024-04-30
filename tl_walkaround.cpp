@@ -75,6 +75,8 @@ inline constinit struct ExEdit092 {
 		// 5: ? 不明．
 		// 6: Ctrl での複数選択ドラッグ．
 		// 7: Alt でのスクロールドラッグ．
+	int32_t* timeline_drag_edit_flag;		// 0x177a08, 0: clean, 1: dirty.
+		// makes sense only for drag kinds 1, 2, 3 above.
 
 	int32_t* timeline_BPM_tempo;			// 0x159190, multiplied by 10'000
 	int32_t* timeline_BPM_frame_origin;		// 0x158d28, 1-based
@@ -105,6 +107,7 @@ private:
 		pick_addr(timeline_height_in_layers,	0x0a3fbc);
 
 		pick_addr(timeline_drag_kind,			0x177a24);
+		pick_addr(timeline_drag_edit_flag,		0x177a08);
 
 		pick_addr(timeline_BPM_tempo,			0x159190);
 		pick_addr(timeline_BPM_frame_origin,	0x158d28);
@@ -728,7 +731,6 @@ class Drag {
 	}
 	static void exit_drag() {
 		drag_state = 0;
-		*exedit.timeline_drag_kind = 0;
 		if (::GetCapture() == exedit.fp->hwnd)
 			::ReleaseCapture();
 	}
@@ -750,13 +752,6 @@ class Drag {
 			case WM_MOUSEMOVE:
 				return do_seek(static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16)) ? TRUE : FALSE;
 
-			case WM_LBUTTONUP:
-				if (*exedit.timeline_drag_kind != 0) {
-					// if this drag is overriding exedit drag, erase exedit's.
-					*exedit.timeline_drag_kind = 0;
-					return FALSE;
-				}
-				[[fallthrough]];
 			case WM_RBUTTONUP:
 			case WM_MBUTTONUP:
 			case WM_XBUTTONUP:
@@ -767,11 +762,6 @@ class Drag {
 				// any mouse button would stop this drag.
 			case WM_CAPTURECHANGED: // drag aborted.
 			end_this_drag:
-				if (*exedit.timeline_drag_kind != 0) {
-					// if exedit drag is still active, yield to the default handler.
-					drag_state = 0;
-					goto default_handler;
-				}
 				exit_drag();
 				return FALSE;
 
@@ -806,17 +796,31 @@ class Drag {
 			if (Timeline::x_leftmost_client > mouse_x || Timeline::y_topmost_client > mouse_y)
 				goto default_handler;
 
-			// exedit must not be in a dragging state other than for moving the current frame.
+			// exedit must not be in a dragging state, or at least yet-to-edit.
 			auto drag_kind = *exedit.timeline_drag_kind;
-			if (!(drag_kind == 0 || drag_kind == 4)) goto default_handler;
+			switch (drag_kind) {
+			case 1: case 2: case 3:
+				if (*exedit.timeline_drag_edit_flag != 0) goto default_handler;
+				break;
+			}
 
 			// additionally check for the current state of AviUtl.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp) ||
 				::GetCapture() != (drag_kind == 0 ? nullptr : hwnd)) goto default_handler;
 
+			// exit the existing drag before starting new one.
+			if (drag_kind == 6) {
+				// releasing ctrl key should deselect.
+				ForceKeyState ctrl{ VK_CONTROL, false };
+				exedit.func_wndproc(hwnd, WM_KEYUP, VK_CONTROL, 0xc000'0001, editp, fp);
+			}
+			else if (drag_kind != 0) exedit.func_wndproc(hwnd, WM_LBUTTONUP,
+				wparam & ~(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON | MK_XBUTTON1 | MK_XBUTTON2 | ((XBUTTON1 | XBUTTON2) << 16) | MK_CONTROL),
+				lparam, editp, fp);
+
 			// turn into the dragging state, overriding mouse behavior.
 			drag_state = state_cand;
-			if (drag_kind == 0) ::SetCapture(hwnd);
+			::SetCapture(hwnd);
 			::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
 			return do_seek(mouse_x, mouse_y) ? TRUE : FALSE;
 		}
@@ -1364,7 +1368,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.22-beta2"
+#define PLUGIN_VERSION	"v1.22-beta3"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
