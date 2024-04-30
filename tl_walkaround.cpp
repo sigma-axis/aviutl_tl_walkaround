@@ -66,6 +66,16 @@ inline constinit struct ExEdit092 {
 	int32_t* timeline_v_scroll_pos;			// 0x1a5308
 	int32_t* timeline_height_in_layers;		// 0x0a3fbc
 
+	int32_t* timeline_drag_kind;			// 0x177a24
+		// 0: ドラッグなし．
+		// 1: オブジェクト移動ドラッグ．
+		// 2: オブジェクトの左端をつまんで移動．
+		// 3: 中間点や右端をつまんで移動．
+		// 4: 現在フレームを動かすドラッグ．
+		// 5: ? 不明．
+		// 6: Ctrl での複数選択ドラッグ．
+		// 7: Alt でのスクロールドラッグ．
+
 	int32_t* timeline_BPM_tempo;			// 0x159190, multiplied by 10'000
 	int32_t* timeline_BPM_frame_origin;		// 0x158d28, 1-based
 	int32_t* timeline_BPM_num_beats;		// 0x178e30
@@ -93,6 +103,8 @@ private:
 		pick_addr(timeline_v_scroll_bar,		0x158d34);
 		pick_addr(timeline_v_scroll_pos,		0x1a5308);
 		pick_addr(timeline_height_in_layers,	0x0a3fbc);
+
+		pick_addr(timeline_drag_kind,			0x177a24);
 
 		pick_addr(timeline_BPM_tempo,			0x159190);
 		pick_addr(timeline_BPM_frame_origin,	0x158d28);
@@ -461,10 +473,14 @@ inline constinit struct Settings {
 	enum class DragButton : uint8_t {
 		none		= 0,
 		// left can't be assigned.
-		right_shift	= 1,
+		shift_right	= 1,
 		wheel		= 2,
 		x1			= 3,
 		x2			= 4,
+		left_right	= 5,
+		left_wheel	= 6,
+		left_x1		= 7,
+		left_x2		= 8,
 	};
 	enum class ModKey : uint8_t {
 		off,
@@ -712,6 +728,7 @@ class Drag {
 	}
 	static void exit_drag() {
 		drag_state = 0;
+		*exedit.timeline_drag_kind = 0;
 		if (::GetCapture() == exedit.fp->hwnd)
 			::ReleaseCapture();
 	}
@@ -733,26 +750,36 @@ class Drag {
 			case WM_MOUSEMOVE:
 				return do_seek(static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16)) ? TRUE : FALSE;
 
+			case WM_LBUTTONUP:
+				if (*exedit.timeline_drag_kind != 0) {
+					// if this drag is overriding exedit drag, erase exedit's.
+					*exedit.timeline_drag_kind = 0;
+					return FALSE;
+				}
+				[[fallthrough]];
+			case WM_RBUTTONUP:
+			case WM_MBUTTONUP:
+			case WM_XBUTTONUP:
 			case WM_LBUTTONDOWN:
 			case WM_RBUTTONDOWN:
 			case WM_MBUTTONDOWN:
 			case WM_XBUTTONDOWN:
-			case WM_LBUTTONUP:
-			case WM_RBUTTONUP:
-			case WM_MBUTTONUP:
-			case WM_XBUTTONUP:
 				// any mouse button would stop this drag.
 			case WM_CAPTURECHANGED: // drag aborted.
+			end_this_drag:
+				if (*exedit.timeline_drag_kind != 0) {
+					// if exedit drag is still active, yield to the default handler.
+					drag_state = 0;
+					goto default_handler;
+				}
 				exit_drag();
 				return FALSE;
 
 			case WM_KEYDOWN:
 			case WM_SYSKEYDOWN:
-				if (wparam == VK_ESCAPE) {
+				if (wparam == VK_ESCAPE)
 					// ESC key should stop dragging too.
-					exit_drag();
-					return FALSE;
-				}
+					goto end_this_drag;
 				[[fallthrough]];
 			case WM_KEYUP:
 			case WM_SYSKEYUP:
@@ -773,9 +800,13 @@ class Drag {
 			else if (message == bpm_mes_down && (wparam & bpm_msk_flags) == bpm_req_flags) state_cand = 2;
 			else goto default_handler;
 
+			// exedit must not be in a dragging state other than for moving the current frame.
+			auto drag_kind = *exedit.timeline_drag_kind;
+			if (!(drag_kind == 0 || drag_kind == 4)) goto default_handler;
+
 			// additionally check for the current state of AviUtl.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp) ||
-				::GetCapture() != nullptr) goto default_handler;
+				::GetCapture() != (drag_kind == 0 ? nullptr : hwnd)) goto default_handler;
 
 			// one more thing that user must be clicking inside the timeline region.
 			int mouse_x = static_cast<int16_t>(lparam),
@@ -785,7 +816,7 @@ class Drag {
 
 			// turn into the dragging state, overriding mouse behavior.
 			drag_state = state_cand;
-			::SetCapture(hwnd);
+			if (drag_kind == 0) ::SetCapture(hwnd);
 			::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
 			return do_seek(mouse_x, mouse_y) ? TRUE : FALSE;
 		}
@@ -817,11 +848,14 @@ public:
 			UINT mes; uint32_t btn;
 			switch (button) {
 				using enum Settings::DragButton;
-			case right_shift:
-						mes = WM_RBUTTONDOWN; btn = MK_RBUTTON | MK_SHIFT;			break;
-			case wheel:	mes = WM_MBUTTONDOWN; btn = MK_MBUTTON;						break;
-			case x1:	mes = WM_XBUTTONDOWN; btn = MK_XBUTTON1 | (XBUTTON1 << 16);	break;
-			case x2:	mes = WM_XBUTTONDOWN; btn = MK_XBUTTON2 | (XBUTTON2 << 16);	break;
+			case shift_right:	mes = WM_RBUTTONDOWN; btn = MK_RBUTTON | MK_SHIFT;							break;
+			case wheel:			mes = WM_MBUTTONDOWN; btn = MK_MBUTTON;										break;
+			case x1:			mes = WM_XBUTTONDOWN; btn = MK_XBUTTON1 | (XBUTTON1 << 16);					break;
+			case x2:			mes = WM_XBUTTONDOWN; btn = MK_XBUTTON2 | (XBUTTON2 << 16);					break;
+			case left_right:	mes = WM_RBUTTONDOWN; btn = MK_LBUTTON | MK_RBUTTON;						break;
+			case left_wheel:	mes = WM_MBUTTONDOWN; btn = MK_LBUTTON | MK_MBUTTON;						break;
+			case left_x1:		mes = WM_XBUTTONDOWN; btn = MK_LBUTTON | MK_XBUTTON1 | (XBUTTON1 << 16);	break;
+			case left_x2:		mes = WM_XBUTTONDOWN; btn = MK_LBUTTON | MK_XBUTTON2 | (XBUTTON2 << 16);	break;
 			case none: default: return disabled;
 			}
 
@@ -1330,7 +1364,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.22-alpha1"
+#define PLUGIN_VERSION	"v1.22-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
