@@ -24,6 +24,9 @@ using byte = uint8_t;
 using namespace AviUtl;
 using namespace ExEdit;
 
+#include "key_states.hpp"
+using namespace sigma_lib::W32::UI;
+
 ////////////////////////////////
 // 主要情報源の変数アドレス．
 ////////////////////////////////
@@ -368,34 +371,6 @@ private:
 // Windows API 利用の補助関数．
 ////////////////////////////////
 
-// キー入力認識をちょろまかす補助クラス．
-class ForceKeyState {
-	static auto force_key_state(short vkey, uint8_t state)
-	{
-		uint8_t states[256]; std::ignore = ::GetKeyboardState(states);
-		std::swap(state, states[vkey]); ::SetKeyboardState(states);
-		return state;
-	}
-
-	constexpr static auto state(bool pressed) { return pressed ? key_pressed : key_released; }
-
-	const short vkey;
-	const uint8_t prev;
-
-public:
-	constexpr static uint8_t key_released = 0, key_pressed = 0x80;
-	constexpr static int vkey_invalid = -1;
-
-	ForceKeyState(short vkey, bool pressed) : ForceKeyState(vkey, state(pressed)) {}
-	ForceKeyState(short vkey, uint8_t state) :
-		vkey{ 0 <= vkey && vkey < 256 ? vkey : vkey_invalid },
-		prev{ this->vkey != vkey_invalid ? force_key_state(this->vkey, state) : uint8_t{} } {}
-	~ForceKeyState() { if (vkey != vkey_invalid) force_key_state(vkey, prev); }
-
-	ForceKeyState(const ForceKeyState&) = delete;
-	ForceKeyState& operator=(const ForceKeyState&) = delete;
-};
-
 // タイムラインのスクロールバー操作．
 class TimelineScrollBar {
 	HWND* const& phwnd;
@@ -724,8 +699,7 @@ class Drag {
 			std::abs(moveto_x - mouse_x) > settings.mouse.snap_range)) return false;
 
 		// Then, move to the desired destination, forcing Shift key state if necessary.
-		ForceKeyState shift(settings.mouse.suppress_shift ?
-			VK_SHIFT : ForceKeyState::vkey_invalid, false);
+		ForceKeyState shift{ settings.mouse.suppress_shift ? VK_SHIFT : 0, false };
 		fp->exfunc->set_frame(editp, moveto);
 		return true;
 	}
@@ -1217,8 +1191,7 @@ inline bool menu_seek_obj_handler(Menu::ID id, EditHandle* editp, FilterPlugin* 
 	if (pos == moveto) return false;
 
 	// disable SHIFT key
-	ForceKeyState shift(settings.keyboard.suppress_shift ?
-		VK_SHIFT : ForceKeyState::vkey_invalid, false);
+	ForceKeyState shift{ settings.keyboard.suppress_shift ? VK_SHIFT : 0, false };
 	if (pos == fp->exfunc->set_frame(editp, moveto)) return false; // 実質移動なし．
 
 	// 拡張編集のバグで，「カーソル移動時に自動でスクロール」を設定していても，
@@ -1242,7 +1215,7 @@ inline bool menu_select_obj_handler(Menu::ID id, EditHandle* editp)
 	}
 
 	// fake shift key state.
-	ForceKeyState k(VK_SHIFT, shift);
+	ForceKeyState k{ VK_SHIFT, shift };
 
 	// 拡張編集にコマンドメッセージ送信．
 	return exedit.fp->func_WndProc(exedit.fp->hwnd, FilterPlugin::WindowMessage::Command,
@@ -1368,7 +1341,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.22"
+#define PLUGIN_VERSION	"v1.23-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)

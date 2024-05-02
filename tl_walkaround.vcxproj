@@ -101,6 +101,9 @@
     <None Include="assets\tl_walkaround.ini" />
     <None Include="tl_walkaround.def" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="key_states.hpp" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

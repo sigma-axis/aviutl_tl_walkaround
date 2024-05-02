@@ -30,4 +30,9 @@
       <Filter>assets</Filter>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="key_states.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
 </Project>
