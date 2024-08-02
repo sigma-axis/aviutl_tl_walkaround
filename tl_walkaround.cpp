@@ -484,6 +484,9 @@ inline constinit struct Settings {
 		uint8_t snap_range = 20;
 		constexpr static uint8_t snap_range_min = 2, snap_range_max = 128;
 		bool suppress_shift = true;
+
+		DragButton scr_button = DragButton::none;
+		ModKey scr_condition = ModKey::on;
 	} mouse;
 
 	void load(const char* ini_file)
@@ -544,6 +547,9 @@ inline constinit struct Settings {
 		load_mkey	(bpm_stop_4th_beat,		mouse);
 		load_mkey	(bpm_stop_nth_beat,		mouse);
 
+		load_enum	(scr_button,			mouse);
+		load_mkey	(scr_condition,			mouse);
+
 		load_int	(snap_range,			mouse);
 		load_bool	(suppress_shift,		mouse);
 
@@ -580,12 +586,12 @@ inline void load_settings(HMODULE h_dll)
 ////////////////////////////////
 class Drag {
 	// WM_*BUTTONDOWN.
-	static inline constinit UINT obj_mes_down = WM_NULL, bpm_mes_down = WM_NULL;
+	static inline constinit UINT obj_mes_down = WM_NULL, bpm_mes_down = WM_NULL, scr_mes_down = WM_NULL;
 	// flags in wparam that are either required or rejected.
-	static inline constinit uint32_t obj_msk_flags = 0, bpm_msk_flags = 0;
+	static inline constinit uint32_t obj_msk_flags = 0, bpm_msk_flags = 0, scr_msk_flags = 0;
 	// flags in wparam required to be one.
-	static inline constinit uint32_t obj_req_flags = ~0, bpm_req_flags = ~0;
-	static inline uint_fast8_t drag_state = 0; // 0: normal, 1: obj-wise drag, 2: bpm-wise drag.
+	static inline constinit uint32_t obj_req_flags = ~0, bpm_req_flags = ~0, scr_req_flags = ~0;
+	static inline uint_fast8_t drag_state = 0; // 0: normal, 1: obj-wise drag, 2: bpm-wise drag, 3: scroll drag.
 
 	constexpr static bool key2flag(Settings::ModKey k, bool key_ctrl, bool key_shift) {
 		switch (k) {
@@ -703,7 +709,14 @@ class Drag {
 		fp->exfunc->set_frame(editp, moveto);
 		return true;
 	}
+	static bool TLScroll(int mouse_x, int mouse_y, bool ctrl, bool shift,
+		EditHandle* editp, FilterPlugin* fp)
+	{
+		return exedit.func_wndproc(exedit.fp->hwnd, WM_MOUSEMOVE,
+			MK_LBUTTON, (mouse_y << 16) | (mouse_x & 0xffff), editp, fp) != FALSE;
+	}
 	static void exit_drag() {
+		if (drag_state == 3) *exedit.timeline_drag_kind = 0;
 		drag_state = 0;
 		if (::GetCapture() == exedit.fp->hwnd)
 			::ReleaseCapture();
@@ -713,7 +726,9 @@ class Drag {
 		EditHandle* editp, FilterPlugin* fp)
 	{
 		auto do_seek = [&](int mouse_x, int mouse_y) {
-			return (drag_state == 1 ? ObjSeek : BPMSeek)(
+			return (
+				drag_state == 1 ? ObjSeek :
+				drag_state == 2 ? BPMSeek : TLScroll)(
 				mouse_x, mouse_y, (wparam & MK_CONTROL) != 0, (wparam & MK_SHIFT) != 0, editp, fp);
 		};
 		if (drag_state != 0) {
@@ -762,6 +777,7 @@ class Drag {
 			// check for the message condition to initiate drag operation.
 			if (message == obj_mes_down && (wparam & obj_msk_flags) == obj_req_flags) state_cand = 1;
 			else if (message == bpm_mes_down && (wparam & bpm_msk_flags) == bpm_req_flags) state_cand = 2;
+			else if (message == scr_mes_down && (wparam & scr_msk_flags) == scr_req_flags) state_cand = 3;
 			else goto default_handler;
 
 			// one more thing that user must be clicking inside the timeline region.
@@ -794,6 +810,12 @@ class Drag {
 
 			// turn into the dragging state, overriding mouse behavior.
 			drag_state = state_cand;
+			if (state_cand == 3) {
+				// scroll drag uses built-in behavior of exedit.
+				*exedit.timeline_drag_kind = 0;
+				ForceKeyState alt{ VK_MENU, true };
+				return exedit.func_wndproc(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam, editp, fp);
+			}
 			::SetCapture(hwnd);
 			::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<PCWSTR>(IDC_ARROW)));
 			return do_seek(mouse_x, mouse_y) ? TRUE : FALSE;
@@ -848,8 +870,9 @@ public:
 
 		std::tie(obj_mes_down, obj_msk_flags, obj_req_flags) = mes_flags(settings.mouse.obj_button, settings.mouse.obj_condition);
 		std::tie(bpm_mes_down, bpm_msk_flags, bpm_req_flags) = mes_flags(settings.mouse.bpm_button, settings.mouse.bpm_condition);
+		std::tie(scr_mes_down, scr_msk_flags, scr_req_flags) = mes_flags(settings.mouse.scr_button, settings.mouse.scr_condition);
 
-		if (obj_mes_down != WM_NULL || bpm_mes_down != WM_NULL)
+		if (obj_mes_down != WM_NULL || bpm_mes_down != WM_NULL || scr_mes_down != WM_NULL)
 			// as this feature is enabled, replace the callback function.
 			exedit.fp->func_WndProc = &func_wndproc_detour;
 	}
