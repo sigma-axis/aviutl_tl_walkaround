@@ -741,6 +741,9 @@ class Drag {
 			case WM_MOUSEMOVE:
 				return do_seek(static_cast<int16_t>(lparam), static_cast<int16_t>(lparam >> 16)) ? TRUE : FALSE;
 
+			case WM_LBUTTONUP:
+				// dismiss left-up.
+				return FALSE;
 			case WM_RBUTTONUP:
 			case WM_MBUTTONUP:
 			case WM_XBUTTONUP:
@@ -748,7 +751,7 @@ class Drag {
 			case WM_RBUTTONDOWN:
 			case WM_MBUTTONDOWN:
 			case WM_XBUTTONDOWN:
-				// any mouse button would stop this drag.
+				// any mouse button except left button would stop this drag.
 			case WM_CAPTURECHANGED: // drag aborted.
 			end_this_drag:
 				exit_drag();
@@ -1364,7 +1367,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"TLショトカ移動"
-#define PLUGIN_VERSION	"v1.23"
+#define PLUGIN_VERSION	"v1.24-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
