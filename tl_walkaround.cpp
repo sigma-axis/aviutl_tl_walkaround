@@ -278,7 +278,7 @@ private:
 public:
 	// タイムラインの最上段レイヤーの左上座標．
 	constexpr static int x_leftmost_client = 64, y_topmost_client = 42;
-	static inline int PointToFrame(int x)
+	static int PointToFrame(int x)
 	{
 		x -= x_leftmost_client;
 		x *= scale_denom;
@@ -288,7 +288,7 @@ public:
 
 		return x;
 	}
-	static inline int FrameToPoint(int f)
+	static int FrameToPoint(int f)
 	{
 		f -= *exedit.timeline_h_scroll_pos;
 		{
@@ -399,7 +399,7 @@ public:
 	int get_pos() const { return *pos; }
 	int get_page_size() const { return *page; }
 };
-inline constexpr struct : TimelineScrollBar {
+constexpr struct : TimelineScrollBar {
 	constexpr static int
 		scroll_raw = 1'000'000, // スクロール量の基準となる内部的な数値．
 		margin_raw = 960'000; // 最終フレームより右側に表示される余白幅を決定する内部的な数値．
@@ -409,7 +409,7 @@ inline constexpr struct : TimelineScrollBar {
 		return -1;
 	}
 } tl_scroll_h { true };
-inline constexpr TimelineScrollBar tl_scroll_v { false };
+constexpr TimelineScrollBar tl_scroll_v { false };
 
 
 ////////////////////////////////

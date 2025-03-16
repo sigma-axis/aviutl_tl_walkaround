@@ -98,6 +98,7 @@ namespace sigma_lib::W32::UI
 				((key[I] > 0 && m ? (rew[I] = m[I](state[key[I]])) : (key[I] = 0)), ...);
 				::SetKeyboardState(state);
 			}
+			else ((key[I] = 0), ...);
 		}
 
 	public:
